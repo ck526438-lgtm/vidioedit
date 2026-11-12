@@ -109,6 +109,8 @@ async function probe(file) {
     info.hasAudio = /Stream #.*Audio:/.test(stderr);
     const v = stderr.match(/Stream #.*Video:.*?(\d{2,5})x(\d{2,5})/);
     if (v) { info.width = +v[1]; info.height = +v[2]; }
+    const rot = stderr.match(/rotation of (-?[\d.]+) degrees/) || stderr.match(/rotate\s*:\s*(-?\d+)/);
+    if (rot && Math.abs(Math.round(parseFloat(rot[1]))) % 180 === 90) { const w = info.width; info.width = info.height; info.height = w; }
     if (!info.type) info.type = v && !/attached pic/.test(stderr) ? 'video' : (info.hasAudio ? 'audio' : null);
   } catch (e) {
     info.error = String(e.message || e);
@@ -217,7 +219,9 @@ function buildAudioGraph(audio, firstIndex, total) {
     const idx = firstIndex + i;
     const srcLen = a.dur * a.speed;
     inputs.push('-ss', a.in.toFixed(3), '-t', srcLen.toFixed(3), '-i', a.path);
-    const chain = [`aresample=48000`, 'aformat=channel_layouts=stereo', ...atempoChain(a.speed), `volume=${a.volume.toFixed(3)}`];
+    const chain = [`aresample=48000`, 'aformat=channel_layouts=stereo', ...atempoChain(a.speed)];
+    if (a.denoise) chain.push('highpass=f=80', 'afftdn=nf=-25');
+    chain.push(`volume=${a.volume.toFixed(3)}`);
     if (a.fadeIn > 0) chain.push(`afade=t=in:st=0:d=${a.fadeIn.toFixed(3)}`);
     if (a.fadeOut > 0) chain.push(`afade=t=out:st=${Math.max(0, a.dur - a.fadeOut).toFixed(3)}:d=${a.fadeOut.toFixed(3)}`);
     const ms = Math.max(0, Math.round(a.start * 1000));
@@ -241,18 +245,20 @@ ipcMain.handle('export:pick', async (_e, defName) => {
 
 ipcMain.handle('export:start', async (_e, opts) => {
   if (job) throw new Error('Un export est déjà en cours.');
-  const { outPath, width, height, fps, duration, audio, quality } = opts;
+  const { outPath, width, height, fps, duration, audio, quality, hw } = opts;
   const crf = { high: 18, medium: 23, low: 28 }[quality] || 20;
+  const encoders = hw ? await detectHwEncoders() : [];
+  const enc = encoders[0] || 'libx264';
   const args = ['-y', '-hide_banner', '-loglevel', 'error',
     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${width}x${height}`, '-r', String(fps), '-i', 'pipe:0'];
   const graph = buildAudioGraph(audio || [], 1, duration);
   if (graph) args.push(...graph.inputs, '-filter_complex', graph.filter, '-map', '0:v', '-map', '[aout]');
-  args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart');
+  args.push(...encoderArgs(enc, crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart');
   if (graph) args.push('-c:a', 'aac', '-b:a', '192k');
   args.push('-t', duration.toFixed(3), outPath);
 
   const proc = spawn(FFMPEG, args, { windowsHide: true });
-  job = { proc, outPath, err: '', closed: false, code: null };
+  job = { proc, outPath, err: '', closed: false, code: null, encoder: enc };
   proc.stderr.on('data', (d) => { job && (job.err += d.toString()); });
   proc.on('error', (e) => { if (job) { job.err += String(e.message); job.closed = true; } });
   job.done = new Promise((res) => proc.on('close', (code) => {
@@ -260,7 +266,7 @@ ipcMain.handle('export:start', async (_e, opts) => {
     res(code);
   }));
   proc.stdin.on('error', () => { /* géré via le code de sortie */ });
-  return true;
+  return { encoder: enc };
 });
 
 ipcMain.handle('export:frame', async (_e, buf) => {
@@ -386,4 +392,245 @@ ipcMain.handle('ai:chat', async (_e, { system, messages }) => {
     return (j.content || []).map((c) => c.text || '').join('');
   }
   throw new Error('Aucun modèle IA configuré');
+});
+
+// =====================================================================
+// v1.1 — Encodeurs matériels, décodage rapide, Whisper, inversion, gel
+// =====================================================================
+const os = require('os');
+const crypto = require('crypto');
+const cacheDir = () => { const d = path.join(app.getPath('userData'), 'cache'); fs.mkdirSync(d, { recursive: true }); return d; };
+
+let hwEncoders = null;
+async function detectHwEncoders() {
+  if (hwEncoders) return hwEncoders;
+  hwEncoders = [];
+  for (const e of ['h264_nvenc', 'h264_qsv', 'h264_amf']) {
+    try {
+      const { code } = await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=black:s=320x240:d=0.2', '-c:v', e, '-f', 'null', '-']);
+      if (code === 0) hwEncoders.push(e);
+    } catch (_) { /* indisponible */ }
+  }
+  return hwEncoders;
+}
+function encoderArgs(enc, crf) {
+  switch (enc) {
+    case 'h264_nvenc': return ['-c:v', enc, '-preset', 'p5', '-rc', 'vbr', '-cq', String(crf), '-b:v', '0'];
+    case 'h264_qsv': return ['-c:v', enc, '-global_quality', String(crf), '-preset', 'medium'];
+    case 'h264_amf': return ['-c:v', enc, '-rc', 'cqp', '-qp_i', String(crf), '-qp_p', String(crf), '-quality', 'balanced'];
+    default: return ['-c:v', 'libx264', '-preset', 'fast', '-crf', String(crf)];
+  }
+}
+ipcMain.handle('export:hw', () => detectHwEncoders());
+
+// ---------- Décodage d'images par FFmpeg (export rapide et compatible HEVC, ProRes…)
+class FrameReader {
+  constructor({ path: file, from, speed, fps, w, h }) {
+    this.size = w * h * 4;
+    this.frames = [];
+    this.waiters = [];
+    this.pending = null;
+    this.pos = -1;
+    this.last = null;
+    this.ended = false;
+    this.err = '';
+    const vf = `setpts=(PTS-STARTPTS)/${speed},fps=${fps},scale=${w}:${h}:flags=bicubic`;
+    this.proc = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-ss', from.toFixed(3), '-i', file, '-an', '-sn',
+      '-vf', vf, '-pix_fmt', 'rgba', '-f', 'rawvideo', 'pipe:1'], { windowsHide: true });
+    this.proc.stdout.on('data', (chunk) => this.onData(chunk));
+    this.proc.stderr.on('data', (d) => { this.err += d.toString(); });
+    const end = () => { this.ended = true; this.wake(); };
+    this.proc.on('close', end);
+    this.proc.on('error', end);
+  }
+  wake() { const w = this.waiters; this.waiters = []; w.forEach((r) => r()); }
+  onData(chunk) {
+    let buf = this.pending ? Buffer.concat([this.pending, chunk]) : chunk;
+    while (buf.length >= this.size) {
+      this.frames.push(Buffer.from(buf.subarray(0, this.size)));
+      buf = buf.subarray(this.size);
+    }
+    this.pending = buf.length ? Buffer.from(buf) : null;
+    if (this.frames.length > 4) this.proc.stdout.pause();
+    this.wake();
+  }
+  async next() {
+    while (!this.frames.length) {
+      if (this.ended) return null;
+      await new Promise((r) => this.waiters.push(r));
+    }
+    const f = this.frames.shift();
+    if (this.frames.length < 3) this.proc.stdout.resume();
+    return f;
+  }
+  async get(index) {
+    while (this.pos < index) {
+      const f = await this.next();
+      if (!f) break;
+      this.last = f;
+      this.pos++;
+    }
+    return this.last;
+  }
+  close() { try { this.proc.kill('SIGKILL'); } catch (_) { /* */ } }
+}
+const readers = new Map();
+ipcMain.handle('decode:open', (_e, o) => {
+  if (readers.has(o.key)) readers.get(o.key).close();
+  readers.set(o.key, new FrameReader(o));
+  return true;
+});
+ipcMain.handle('decode:frame', async (_e, { key, index }) => {
+  const r = readers.get(key);
+  if (!r) return null;
+  const f = await r.get(index);
+  if (!f && r.err) throw new Error(r.err.slice(0, 400));
+  return f;
+});
+ipcMain.handle('decode:closeAll', () => { for (const r of readers.values()) r.close(); readers.clear(); return true; });
+
+// ---------- Inverser / figer
+ipcMain.handle('media:reverse', async (_e, { file, start, len, hasAudio }) => {
+  const id = crypto.createHash('md5').update(`${file}|${start}|${len}`).digest('hex').slice(0, 10);
+  const out = path.join(cacheDir(), `inverse_${id}.mp4`);
+  if (!fs.existsSync(out)) {
+    const args = ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(start), '-t', String(len), '-i', file, '-vf', 'reverse'];
+    if (hasAudio) args.push('-af', 'areverse', '-c:a', 'aac', '-b:a', '192k'); else args.push('-an');
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p', out);
+    const r = await runFfmpeg(args);
+    if (r.code !== 0) throw new Error(r.stderr.slice(-400));
+  }
+  return probe(out);
+});
+ipcMain.handle('media:frame', async (_e, { file, time }) => {
+  const out = path.join(cacheDir(), `image_${Date.now()}.png`);
+  const r = await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', out]);
+  if (r.code !== 0 || !fs.existsSync(out)) throw new Error(r.stderr.slice(-400) || 'Capture impossible');
+  return probe(out);
+});
+
+// ---------- Sous-titres automatiques (Whisper)
+const MODELS = {
+  tiny: { file: 'ggml-tiny.bin', label: 'Très rapide (75 Mo)' },
+  base: { file: 'ggml-base.bin', label: 'Rapide (142 Mo)' },
+  small: { file: 'ggml-small.bin', label: 'Précis (466 Mo)' },
+  medium: { file: 'ggml-medium.bin', label: 'Très précis (1,5 Go)' },
+};
+const modelsDir = () => { const d = path.join(app.getPath('userData'), 'models'); fs.mkdirSync(d, { recursive: true }); return d; };
+function modelPath(size) {
+  if (process.env.VIDIOEDIT_WHISPER_MODEL) return process.env.VIDIOEDIT_WHISPER_MODEL;
+  return path.join(modelsDir(), (MODELS[size] || MODELS.base).file);
+}
+function whisperBin() {
+  const exe = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  const cands = [process.env.VIDIOEDIT_WHISPER, path.join(process.resourcesPath || '', 'whisper', exe), path.join(__dirname, 'vendor', 'whisper', exe)];
+  return cands.find((c) => c && fs.existsSync(c)) || null;
+}
+const sendProgress = (o) => { if (mainWindow) mainWindow.webContents.send('captions:progress', o); };
+
+ipcMain.handle('captions:status', () => {
+  const models = {};
+  Object.keys(MODELS).forEach((k) => { models[k] = { label: MODELS[k].label, installed: fs.existsSync(modelPath(k)) }; });
+  return { binary: !!whisperBin(), models };
+});
+
+ipcMain.handle('captions:download', async (_e, size) => {
+  const m = MODELS[size] || MODELS.base;
+  const dest = modelPath(size);
+  if (fs.existsSync(dest)) return true;
+  const url = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${m.file}`;
+  const r = await fetch(url);
+  if (!r.ok || !r.body) throw new Error(`Téléchargement impossible (${r.status})`);
+  const total = +r.headers.get('content-length') || 0;
+  const tmp = `${dest}.part`;
+  const out = fs.createWriteStream(tmp);
+  let got = 0, lastPct = -1;
+  for await (const chunk of r.body) {
+    got += chunk.length;
+    if (!out.write(chunk)) await new Promise((res) => out.once('drain', res));
+    const pct = total ? Math.floor((got / total) * 100) : 0;
+    if (pct !== lastPct) { lastPct = pct; sendProgress({ phase: 'download', pct }); }
+  }
+  await new Promise((res) => out.end(res));
+  fs.renameSync(tmp, dest);
+  return true;
+});
+
+async function extractWav(file, start, len) {
+  const out = path.join(os.tmpdir(), `vidioedit_${process.pid}_${Date.now()}.wav`);
+  const r = await runFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(start), '-t', String(len), '-i', file, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', out]);
+  if (r.code !== 0) throw new Error(r.stderr.slice(-300));
+  return out;
+}
+const cleanWord = (w) => String(w || '').replace(/\s+/g, ' ').trim();
+const isNoise = (w) => !w || /^\[.*\]$|^\(.*\)$/.test(w) || /^[♪♫\s]+$/.test(w);
+
+function runWhisper(bin, model, wav, lang, idx, count) {
+  return new Promise((resolve, reject) => {
+    const base = wav.replace(/\.wav$/, '');
+    const threads = String(Math.max(2, Math.min(8, os.cpus().length - 1)));
+    const p = spawn(bin, ['-m', model, '-f', wav, '-l', lang || 'auto', '-ml', '1', '-sow', '-oj', '-of', base, '-t', threads, '-pp'], { windowsHide: true });
+    let err = '';
+    p.stderr.on('data', (d) => {
+      const s = d.toString();
+      err += s;
+      const m = s.match(/progress\s*=\s*(\d+)%/);
+      if (m) sendProgress({ phase: 'transcribe', pct: Math.round(((idx + +m[1] / 100) / count) * 100) });
+    });
+    p.on('error', reject);
+    p.on('close', (code) => {
+      try {
+        if (code !== 0) throw new Error(err.slice(-400));
+        const j = JSON.parse(fs.readFileSync(`${base}.json`, 'utf8'));
+        fs.unlinkSync(`${base}.json`);
+        const words = (j.transcription || []).map((x) => ({ w: cleanWord(x.text), t0: x.offsets.from / 1000, t1: x.offsets.to / 1000 })).filter((x) => !isNoise(x.w));
+        resolve(words);
+      } catch (e) { reject(e); }
+    });
+  });
+}
+
+async function transcribeApi(wav, lang) {
+  const s = readSettings();
+  const base = (s.endpoint || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const fd = new FormData();
+  fd.append('file', new Blob([fs.readFileSync(wav)], { type: 'audio/wav' }), 'audio.wav');
+  fd.append('model', s.sttModel || 'whisper-1');
+  fd.append('response_format', 'verbose_json');
+  fd.append('timestamp_granularities[]', 'word');
+  if (lang && lang !== 'auto') fd.append('language', lang);
+  const r = await fetch(`${base}/audio/transcriptions`, { method: 'POST', headers: { Authorization: `Bearer ${s.apiKey || ''}` }, body: fd });
+  if (!r.ok) throw new Error(`API : ${r.status} ${(await r.text()).slice(0, 300)}`);
+  const j = await r.json();
+  if (Array.isArray(j.words) && j.words.length) return j.words.map((w) => ({ w: cleanWord(w.word), t0: w.start, t1: w.end })).filter((x) => !isNoise(x.w));
+  // repli : segments découpés en mots répartis uniformément
+  const out = [];
+  (j.segments || []).forEach((sg) => {
+    const ws = cleanWord(sg.text).split(' ').filter(Boolean);
+    const d = (sg.end - sg.start) / Math.max(1, ws.length);
+    ws.forEach((w, i) => out.push({ w, t0: sg.start + i * d, t1: sg.start + (i + 1) * d }));
+  });
+  return out;
+}
+
+ipcMain.handle('captions:transcribe', async (_e, { items, lang, model, engine }) => {
+  const results = [];
+  const bin = whisperBin();
+  if (engine !== 'api') {
+    if (!bin) throw new Error('Moteur Whisper introuvable dans cette installation.');
+    if (!fs.existsSync(modelPath(model))) throw new Error('MODEL_MISSING');
+  }
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    sendProgress({ phase: 'transcribe', pct: Math.round((i / items.length) * 100) });
+    const wav = await extractWav(it.path, it.start, it.len);
+    try {
+      const words = engine === 'api' ? await transcribeApi(wav, lang) : await runWhisper(bin, modelPath(model), wav, lang, i, items.length);
+      results.push({ key: it.key, words });
+    } finally {
+      try { fs.unlinkSync(wav); } catch (_) { /* */ }
+    }
+  }
+  sendProgress({ phase: 'transcribe', pct: 100 });
+  return results;
 });

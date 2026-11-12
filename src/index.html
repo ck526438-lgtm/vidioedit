@@ -35,6 +35,9 @@
         <button data-tab="media" class="active"><i>▣</i>Médias</button>
         <button data-tab="ai" class="ai-tab"><i>✨</i>IA</button>
         <button data-tab="text"><i>T</i>Texte</button>
+        <button data-tab="captions"><i>💬</i>Sous-titres</button>
+        <button data-tab="stickers"><i>☺</i>Stickers</button>
+        <button data-tab="transitions"><i>⧓</i>Transitions</button>
         <button data-tab="filters"><i>◐</i>Filtres</button>
         <button data-tab="anim"><i>✦</i>Effets</button>
         <button data-tab="canvas"><i>▭</i>Format</button>
@@ -64,7 +67,8 @@
           <button data-q="Supprime les silences">🔇 Silences</button>
           <button data-q="Coupe aux changements de plan">✂ Plans</button>
           <button data-q="Format TikTok vertical 9:16 et remplir l'écran">📱 TikTok</button>
-          <button data-q="Ajoute des fondus partout">◐ Fondus</button>
+          <button data-q="Ajoute des transitions fondu partout">⧓ Transitions</button>
+          <button data-q="Sous-titres automatiques en français">💬 Sous-titres</button>
           <button data-q="Filtre cinéma partout">🎬 Cinéma</button>
         </div>
         <div id="aiStatus" class="hint"></div>
@@ -78,6 +82,40 @@
         <p class="hint">Styles prêts à l'emploi :</p>
         <div id="textPresets" class="preset-grid"></div>
       </section>
+      <section class="tab-body hidden" data-body="captions">
+        <p class="hint">Transcrit automatiquement la parole de vos vidéos en sous-titres animés (Whisper, sur votre PC).</p>
+        <div class="form-col"><label>Langue parlée</label><select id="capLang">
+          <option value="fr">Français</option><option value="en">Anglais</option><option value="auto">Détection automatique</option>
+          <option value="es">Espagnol</option><option value="pt">Portugais</option><option value="ar">Arabe</option>
+          <option value="de">Allemand</option><option value="it">Italien</option><option value="sw">Swahili</option>
+          <option value="yo">Yoruba</option><option value="ln">Lingala</option><option value="ha">Haoussa</option>
+          <option value="zh">Chinois</option><option value="ja">Japonais</option><option value="ru">Russe</option></select></div>
+        <div class="form-col"><label>Moteur</label><select id="capEngine">
+          <option value="local">Whisper local (gratuit, hors-ligne)</option>
+          <option value="api">API (réglages de l'onglet IA)</option></select></div>
+        <div class="form-col" id="capModelRow"><label>Précision</label><select id="capModel"></select></div>
+        <div class="form-col"><label>Mots par sous-titre</label><select id="capWords">
+          <option value="1">1 (mot à mot)</option><option value="2">2</option><option value="3" selected>3</option>
+          <option value="4">4</option><option value="6">6</option><option value="8">8</option></select></div>
+        <div class="form-col"><label>Position</label><select id="capPos">
+          <option value="auto">Bas (auto)</option><option value="center">Centre</option><option value="top">Haut</option></select></div>
+        <label class="toggle"><input type="checkbox" id="capUpper" /> MAJUSCULES</label>
+        <p class="hint">Style :</p>
+        <div id="capStyles" class="preset-grid"></div>
+        <button class="primary wide" id="capGo" style="margin-top:10px">💬 Générer les sous-titres</button>
+        <div id="capProgress" class="hidden" style="margin-top:8px"><div class="progress"><div id="capBar"></div></div><p class="hint" id="capStatus"></p></div>
+      </section>
+      <section class="tab-body hidden" data-body="stickers">
+        <p class="hint">Cliquez pour ajouter au curseur :</p>
+        <div id="stickerGrid" class="sticker-grid"></div>
+      </section>
+      <section class="tab-body hidden" data-body="transitions">
+        <p class="hint">Sélectionnez un clip (ou cliquez sur ＋ entre deux clips), puis une transition.</p>
+        <div class="field two"><label>Durée</label><input type="range" id="transDur" min="0.1" max="2" step="0.05" value="0.5" /></div>
+        <div id="transGrid" class="preset-grid small"></div>
+        <button class="ghost wide" id="transAll" style="margin-top:10px">Appliquer à toutes les coupes</button>
+        <button class="ghost wide" id="transNone" style="margin-top:6px">Retirer toutes les transitions</button>
+      </section>
       <section class="tab-body hidden" data-body="filters">
         <p class="hint">Sélectionnez un clip, puis un filtre.</p>
         <div id="filterGrid" class="preset-grid"></div>
@@ -87,6 +125,8 @@
         <div id="animInGrid" class="preset-grid small"></div>
         <p class="hint">Animation de sortie :</p>
         <div id="animOutGrid" class="preset-grid small"></div>
+        <p class="hint">Effet vidéo du clip sélectionné :</p>
+        <div id="effectGrid" class="preset-grid small"></div>
         <p class="hint">Transition rapide (fondu entrée + sortie) :</p>
         <div class="row">
           <button class="ghost" data-fade="0">Aucune</button>
@@ -113,8 +153,12 @@
           <option value="50">50 ips</option>
           <option value="60">60 ips</option>
         </select>
-        <p class="hint">Couleur de fond :</p>
-        <input type="color" id="bgColor" value="#000000" />
+        <p class="hint">Arrière-plan (zones vides) :</p>
+        <div class="row">
+          <button class="ghost small" id="bgModeColor">Couleur</button>
+          <button class="ghost small" id="bgModeBlur">Flou de la vidéo</button>
+          <input type="color" id="bgColor" value="#000000" />
+        </div>
       </section>
     </aside>
 
@@ -203,6 +247,7 @@
           <option>24</option><option>25</option><option selected>30</option><option>50</option><option>60</option></select></div>
         <div class="form-row"><label>Qualité</label><select id="expQuality">
           <option value="high">Haute</option><option value="medium" selected>Recommandée</option><option value="low">Fichier léger</option></select></div>
+        <label class="toggle" id="expHwRow"><input type="checkbox" id="expHw" checked /> <span id="expHwLabel">Accélération matérielle (GPU)</span></label>
         <p class="hint" id="expInfo"></p>
         <div class="modal-actions">
           <button class="ghost" id="expCancelForm">Annuler</button>

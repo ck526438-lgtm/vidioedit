@@ -19,8 +19,17 @@
   // ------------------------------------------------------------ Contexte du projet
   function orderedClips() {
     const v = V();
+    // Numérotation : piste principale d'abord (#1, #2… = clips dans l'ordre), puis superpositions, textes, audio, sous-titres
+    const rank = (c) => {
+      const t = v.trackById(c.trackId) || {};
+      if (c.caption) return 5;
+      if (t.main) return 0;
+      if (c.kind === 'audio') return 4;
+      if (c.kind === 'text') return 3;
+      return 1;
+    };
     const order = v.project.tracks.map((t) => t.id);
-    return v.project.clips.slice().sort((a, b) => a.start - b.start || order.indexOf(a.trackId) - order.indexOf(b.trackId));
+    return v.project.clips.slice().sort((a, b) => rank(a) - rank(b) || a.start - b.start || order.indexOf(a.trackId) - order.indexOf(b.trackId));
   }
 
   function summarize() {
@@ -74,6 +83,16 @@ Actions disponibles :
 - {"action":"add_media","name":"nom du fichier importé", "start":s (optionnel)}
 - {"action":"ratio","ratio":"${P.ratios.map((r) => r.id).join('|')}"}
 - {"action":"background","color":"#hex"}
+- {"action":"transition","clips":... ou "all" (toutes les coupes de la piste principale), "type":"${P.transitions.map((t) => t.id).join('|')}", "duration":0.5}
+- {"action":"effect","clips":..., "type":"${P.effects.map((e) => e.id).join('|')}", "intensity":0-1}
+- {"action":"captions","language":"fr|en|auto|…", "style":"${P.captionStyles.map((c) => c.id).join('|')}", "words_per_line":3, "position":"auto|center|top", "upper":false}  sous-titres automatiques
+- {"action":"sticker","emoji":"🔥", "start":s}
+- {"action":"keyframe_zoom","clips":..., "from":1, "to":1.3}  zoom progressif sur toute la durée du clip
+- {"action":"crop","clips":..., "left":0, "right":0, "top":0, "bottom":0}  (fractions 0–0.9)
+- {"action":"background_blur","enabled":true}  remplit les bandes noires avec la vidéo floutée
+- {"action":"freeze","clips":"selected"}  image figée de 3 s au curseur
+- {"action":"reverse","clips":...}  lecture à l'envers
+- {"action":"denoise","clips":..., "enabled":true}  réduction du bruit de fond
 - {"action":"undo"}
 
 Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si la demande est impossible ou floue, renvoie "actions": [] et pose une question dans "reply". Les temps sont en secondes.`;
@@ -297,6 +316,43 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
       case 'ratio': if (P.ratios.find((r) => r.id === a.ratio)) { v.project.ratio = a.ratio; v.applyCanvasSize(); log.push(`Format ${a.ratio}.`); } return;
       case 'background': v.project.bg = a.color || '#000000'; log.push('Couleur de fond modifiée.'); return;
       case 'undo': v.undo(); log.push('Dernière action annulée.'); return;
+      case 'transition': {
+        const all = a.clips === 'all' || a.clips == null;
+        const n = all ? v.applyTransition(a.type || 'fade', num(a.duration) || 0.5, 'all')
+          : list().reduce((acc, c) => { v.selectedId = c.id; return acc + v.applyTransition(a.type || 'fade', num(a.duration) || 0.5, 'selected'); }, 0);
+        log.push(n ? `Transition « ${(P.transitions.find((x) => x.id === a.type) || { name: a.type }).name} » sur ${n} coupe(s).` : 'Aucune coupe trouvée pour la transition.');
+        return;
+      }
+      case 'effect': {
+        const cs = list().filter(media);
+        cs.forEach((c) => { c.effect = { type: a.type || 'none', intensity: a.intensity != null ? num(a.intensity) : 0.5 }; });
+        log.push(`Effet « ${(P.effects.find((x) => x.id === a.type) || { name: a.type }).name} » sur ${cs.length} clip(s).`);
+        return;
+      }
+      case 'captions': {
+        status('Génération des sous-titres…');
+        const r = await v.generateCaptions({ lang: a.language || 'fr', style: a.style, maxWords: num(a.words_per_line) || 3, position: a.position || 'auto', upper: !!a.upper, model: settings.whisperModel || 'base', engine: settings.captionsEngine || 'local', onStatus: status });
+        undoMerge = true;
+        log.push(r.ok ? `${r.count} sous-titres créés.` : `Sous-titres impossibles : ${r.error}`);
+        return;
+      }
+      case 'sticker': {
+        if (a.start != null) v.seek(num(a.start));
+        v.addSticker(a.emoji || '🔥');
+        log.push(`Autocollant ${a.emoji || '🔥'} ajouté.`);
+        return;
+      }
+      case 'keyframe_zoom': {
+        const cs = list().filter((c) => c.kind !== 'audio');
+        cs.forEach((c) => { c.keyframes = c.keyframes || {}; c.keyframes.scale = [{ t: 0, v: num(a.from) || 1 }, { t: c.dur, v: num(a.to) || 1.3 }]; });
+        log.push(`Zoom progressif sur ${cs.length} clip(s).`);
+        return;
+      }
+      case 'crop': list().filter(media).forEach((c) => { c.crop = { l: num(a.left) || 0, r: num(a.right) || 0, t: num(a.top) || 0, b: num(a.bottom) || 0 }; }); log.push('Recadrage appliqué.'); return;
+      case 'background_blur': v.project.bgMode = a.enabled === false ? 'color' : 'blur'; log.push(a.enabled === false ? 'Fond uni.' : 'Fond flou activé.'); return;
+      case 'freeze': { const c = list().find((x) => x.kind === 'video'); if (c) { await v.freezeFrame(c); undoMerge = true; log.push('Image figée insérée.'); } else log.push('Sélectionnez un clip vidéo.'); return; }
+      case 'reverse': { for (const c of list().filter((x) => x.kind === 'video')) await v.reverseClip(c); undoMerge = true; log.push('Clip(s) inversé(s).'); return; }
+      case 'denoise': list().filter((c) => c.kind === 'video' || c.kind === 'audio').forEach((c) => { c.denoise = a.enabled !== false; }); log.push(a.enabled === false ? 'Réduction de bruit désactivée.' : 'Réduction du bruit activée (appliquée à l\'export).'); return;
       default: log.push(`Action inconnue ignorée : ${a.action}`);
     }
   }
@@ -327,15 +383,17 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
     const clipNum = t.match(/clips?\s*(?:n[o°]?\s*)?#?(\d+)/);
     const scopeAll = /(partout|tout|tous|toutes|chaque|ensemble|l'ensemble)/.test(t);
     const scope = clipNum ? +clipNum[1] : scopeAll || !hasSel ? 'all' : 'selected';
+    const vscope = clipNum ? +clipNum[1] : scope === 'selected' ? 'selected' : 'visual';
     const secs = (() => { const m = t.match(/(\d+(?:[.,]\d+)?)\s*(?:s\b|sec|seconde)/); return m ? num(m[1]) : null; })();
     const quoted = (() => { const m = String(text).match(/["«“'](.+?)["»”']/) || String(text).match(/:\s*(.+)$/); return m ? m[1].trim() : null; })();
 
     if (/^(annule|undo|retour)/.test(t)) return { reply: 'J\'annule la dernière modification.', actions: [{ action: 'undo' }] };
 
-    const auto = /(montage auto|automatique|monte (la|ma|cette) video|fais (le|un) montage|edit auto)/.test(t);
+    const auto = /(montage auto|monte (la|ma|cette|mes) video|fais (le|un|mon) montage|edit auto|monte automatiquement)/.test(t);
     if (auto) {
       actions.push({ action: 'remove_silences', clips: 'all' }, { action: 'compact' },
-        { action: 'fade', clips: 'visual', duration: 0.3 }, { action: 'animate', clips: 'image', in: 'zoomIn', out: 'fade', duration: 0.6 });
+        { action: 'transition', clips: 'all', type: 'fade', duration: 0.4 }, { action: 'effect', clips: 'image', type: 'kenburns', intensity: 0.5 });
+      if (/sous-titre|sous titre/.test(t)) actions.push({ action: 'captions', language: 'fr', style: 'karaoke', words_per_line: 3 });
       if (!v.project.clips.some((c) => c.kind === 'text')) actions.push({ action: 'add_text', content: quoted || v.project.name, start: 0, duration: 3, style: 'Titre' });
     }
     if (!auto && /(silence|blanc|pause)/.test(t) && /(supprim|enlev|retir|coup|vire|nettoi)/.test(t)) actions.push({ action: 'remove_silences', clips: scope === 'selected' ? 'selected' : 'all' });
@@ -350,11 +408,11 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
     const filterWords = [
       ['bw', /(noir (et|&) blanc|n&b|n et b|monochrome)/], ['vintage', /(vintage|retro|ancien)/], ['vivid', /(vif|vives|eclatant)/],
       ['warm', /\bchaud/], ['cold', /\bfroid/], ['cinema', /(cinema|cinematique|film)(?!.*format)/], ['fade', /delave/],
-      ['drama', /dramatique/], ['dream', /(reve|onirique)/], ['noir', /polar/], ['pop', /\bpop\b/], ['none', /(sans filtre|enleve le filtre|retire le filtre|original)/],
+      ['drama', /dramatique/], ['dream', /(reve|onirique)/], ['noir', /polar/], ['pop', /filtre pop/], ['none', /(sans filtre|enleve le filtre|retire le filtre|original)/],
     ];
     if (!/format/.test(t)) {
       const f = filterWords.find(([, re]) => re.test(t));
-      if (f) actions.push({ action: 'filter', clips: scope === 'selected' ? 'selected' : clipNum ? scope : 'visual', filter: f[0] });
+      if (f) actions.push({ action: 'filter', clips: vscope, filter: f[0] });
     }
 
     // Vitesse
@@ -390,8 +448,8 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
     }
 
     // Transitions / animations
-    if (!auto && /(fondu|transition|enchaine)/.test(t)) actions.push({ action: 'fade', clips: scope === 'selected' ? 'selected' : 'visual', duration: secs || 0.5 });
-    if (/zoom/.test(t)) actions.push({ action: 'animate', clips: scope === 'selected' ? 'selected' : 'visual', in: /arriere|dezoom/.test(t) ? 'zoomOut' : 'zoomIn', duration: secs || 0.6 });
+    if (!auto && /(fondu|enchaine)/.test(t) && !/transition/.test(t) && !/fondu (au |en )?(noir|blanc)/.test(t)) actions.push({ action: 'fade', clips: scope === 'selected' ? 'selected' : 'visual', duration: secs || 0.5 });
+    if (/zoom/.test(t) && !/(progressif|lent|doux|transition)/.test(t)) actions.push({ action: 'animate', clips: scope === 'selected' ? 'selected' : 'visual', in: /arriere|dezoom/.test(t) ? 'zoomOut' : 'zoomIn', duration: secs || 0.6 });
     if (/(rebond|pop)\b.*anim|anim.*(rebond)/.test(t)) actions.push({ action: 'animate', clips: scope, in: 'pop', duration: 0.5 });
 
     // Lumière / couleurs
@@ -399,13 +457,39 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
     if (/(plus sombre|assombri)/.test(t)) actions.push({ action: 'adjust', clips: scope === 'selected' ? 'selected' : 'visual', brightness: 0.8 });
     if (/contraste/.test(t)) actions.push({ action: 'adjust', clips: scope === 'selected' ? 'selected' : 'visual', contrast: /(moins|baisse|reduis)/.test(t) ? 0.8 : 1.25 });
 
+    // Sous-titres
+    if (/(sous-titre|sous titre|soustitre|caption|transcri)/.test(t) && !/(ajoute|mets|ecris).*\b(un|le) sous-titre\s*["«]/.test(t)) {
+      actions.push({ action: 'captions', language: /anglais|english/.test(t) ? 'en' : /auto/.test(t) ? 'auto' : 'fr',
+        style: /mot a mot|un mot/.test(t) ? 'word' : /surlign/.test(t) ? 'box' : /sobre|simple/.test(t) ? 'clean' : /pop|rebond/.test(t) ? 'pop' : 'karaoke',
+        words_per_line: /mot a mot|un mot/.test(t) ? 1 : 3, upper: /majuscule/.test(t) });
+    }
+    // Transitions nommées
+    const trWords = [['glitch', /glitch/], ['flash', /flash/], ['black', /fondu (au |en )?noir/], ['white', /fondu (au |en )?blanc/], ['slideLeft', /(pousse|glisse)/],
+      ['wipeLeft', /balayage/], ['zoomIn', /transition.*zoom|zoom.*transition/], ['circle', /cercle/], ['spin', /(tourbillon|rotation)/], ['blur', /transition.*flou|flou.*transition/], ['doors', /porte/]];
+    if (/(transition|entre (les|chaque) (clips|plans))/.test(t)) {
+      const f = trWords.find(([, re]) => re.test(t));
+      actions.push({ action: 'transition', clips: clipNum ? +clipNum[1] : hasSel && !scopeAll ? 'selected' : 'all', type: f ? f[0] : 'fade', duration: secs || 0.5 });
+    }
+    // Effets vidéo
+    const fxWords = [['shake', /(secousse|tremble|shake)/], ['glitch', /effet glitch/], ['vhs', /(vhs|cassette)/], ['rgb', /(rvb|rgb|chromati)/], ['kenburns', /ken burns/],
+      ['zoomPulse', /(pulsation|pulse|battement)/], ['flash', /(strob)/], ['film', /(grain|pellicule)/], ['pixel', /pixel/], ['mirror', /(kaleido|miroir)/]];
+    const fxw = fxWords.find(([, re]) => re.test(t));
+    if (fxw) actions.push({ action: 'effect', clips: vscope, type: fxw[0], intensity: 0.5 });
+    if (/(fond flou|bandes? (noires? )?floue|arriere-plan flou)/.test(t)) actions.push({ action: 'background_blur', enabled: true });
+    if (/(zoom progressif|zoom lent|zoom doux)/.test(t)) actions.push({ action: 'keyframe_zoom', clips: vscope, from: 1, to: 1.25 });
+    if (/(inverse|a l'envers|rembobin|reverse)/.test(t)) actions.push({ action: 'reverse', clips: scope === 'all' ? 'selected' : scope });
+    if (/(fige|figer|freeze|arret sur image)/.test(t)) actions.push({ action: 'freeze', clips: 'selected' });
+    if (/(bruit|souffle|debruit|grésillement|gresillement)/.test(t) && /(enleve|supprim|redui|retir|nettoi|coupe)/.test(t)) actions.push({ action: 'denoise', clips: scope === 'selected' ? 'selected' : 'all', enabled: true });
+    const emo = String(text).match(/\p{Extended_Pictographic}/u);
+    if (emo && /(autocollant|sticker|emoji|ajoute)/.test(t)) actions.push({ action: 'sticker', emoji: emo[0] });
+
     // Suppression
     if (/(supprim|efface|enleve|retire)\w*\s+(le |la )?(clip|selection)/.test(t) && !/(silence|trou|filtre|son)/.test(t)) actions.push({ action: 'delete', clips: scope === 'all' && !scopeAll ? 'selected' : scope });
 
     if (!actions.length) {
       return {
         reply: 'Je n\'ai pas compris. Exemples : « supprime les silences », « coupe aux changements de plan », « filtre vintage partout », '
-          + '« accélère le clip 2 x2 », « ajoute le titre \"Mon voyage\" en haut », « format TikTok », « fondus partout », « montage automatique ». '
+          + '« accélère le clip 2 x2 », « ajoute le titre \"Mon voyage\" en haut », « format TikTok », « transitions glitch partout », « sous-titres automatiques », « effet secousse », « fond flou », « montage automatique ». '
           + 'Pour des demandes libres, branchez un modèle IA dans ⚙ Réglages.',
         actions: [],
       };

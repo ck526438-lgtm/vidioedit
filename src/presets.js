@@ -26,7 +26,7 @@ window.PRESETS = {
     { id: 'pop', name: 'Pop', adjust: { saturate: 1.8, contrast: 1.2, hue: 10 } },
   ],
 
-  fonts: ['Segoe UI', 'Arial', 'Arial Black', 'Impact', 'Georgia', 'Times New Roman', 'Verdana', 'Trebuchet MS', 'Tahoma', 'Comic Sans MS', 'Courier New', 'Bahnschrift', 'Segoe Script', 'Consolas'],
+  fonts: ['Segoe UI', 'Arial', 'Arial Black', 'Impact', 'Georgia', 'Times New Roman', 'Verdana', 'Trebuchet MS', 'Tahoma', 'Comic Sans MS', 'Courier New', 'Bahnschrift', 'Segoe Script', 'Consolas', 'Segoe UI Emoji'],
 
   defaultText: {
     content: 'Votre texte',
@@ -72,5 +72,52 @@ window.PRESETS = {
     { id: 'slideDown', name: 'Descendre' },
     { id: 'spin', name: 'Rotation' },
     { id: 'blur', name: 'Flou' },
+  ],
+
+  transitions: [
+    { id: 'none', name: 'Aucune', icon: '∅' },
+    { id: 'fade', name: 'Fondu', icon: '◐' },
+    { id: 'black', name: 'Fondu noir', icon: '●' },
+    { id: 'white', name: 'Fondu blanc', icon: '○' },
+    { id: 'flash', name: 'Flash', icon: '✺' },
+    { id: 'wipeLeft', name: 'Balayage ←', icon: '◧' },
+    { id: 'wipeRight', name: 'Balayage →', icon: '◨' },
+    { id: 'wipeUp', name: 'Balayage ↑', icon: '⬒' },
+    { id: 'wipeDown', name: 'Balayage ↓', icon: '⬓' },
+    { id: 'slideLeft', name: 'Pousser ←', icon: '⇠' },
+    { id: 'slideRight', name: 'Pousser →', icon: '⇢' },
+    { id: 'slideUp', name: 'Pousser ↑', icon: '⇡' },
+    { id: 'slideDown', name: 'Pousser ↓', icon: '⇣' },
+    { id: 'zoomIn', name: 'Zoom avant', icon: '⊕' },
+    { id: 'zoomOut', name: 'Zoom arrière', icon: '⊖' },
+    { id: 'blur', name: 'Flou', icon: '≋' },
+    { id: 'circle', name: 'Cercle', icon: '◯' },
+    { id: 'doors', name: 'Portes', icon: '⫼' },
+    { id: 'spin', name: 'Tourbillon', icon: '↻' },
+    { id: 'glitch', name: 'Glitch', icon: '▚' },
+  ],
+
+  effects: [
+    { id: 'none', name: 'Aucun' },
+    { id: 'kenburns', name: 'Ken Burns' },
+    { id: 'zoomPulse', name: 'Pulsation' },
+    { id: 'shake', name: 'Secousse' },
+    { id: 'glitch', name: 'Glitch' },
+    { id: 'rgb', name: 'RVB décalé' },
+    { id: 'vhs', name: 'VHS' },
+    { id: 'flash', name: 'Stroboscope' },
+    { id: 'mirror', name: 'Kaléidoscope' },
+    { id: 'pixel', name: 'Pixels' },
+    { id: 'film', name: 'Grain film' },
+  ],
+
+  stickers: ['😂', '😍', '🔥', '❤️', '👍', '👏', '😎', '🤯', '😭', '🥳', '💯', '✨', '⭐', '🎉', '🚀', '💥', '⚡', '🌈', '👀', '🙏', '💪', '🤔', '😱', '🤣', '😡', '💀', '👑', '🎵', '📍', '✅', '❌', '⚠️', '➡️', '⬇️', '👉', '💬', '❓', '❗', '🎬', '📸'],
+
+  captionStyles: [
+    { id: 'karaoke', name: 'Karaoké', style: { font: 'Arial Black', size: 78, color: '#ffffff', stroke: '#000000', strokeWidth: 7, shadow: 0.6, highlight: '#ffde00', highlightMode: 'color' } },
+    { id: 'box', name: 'Surligné', style: { font: 'Arial Black', size: 74, color: '#ffffff', stroke: '#000000', strokeWidth: 0, shadow: 0.4, highlight: '#22c3e6', highlightMode: 'box' } },
+    { id: 'pop', name: 'Pop', style: { font: 'Impact', size: 92, color: '#ffffff', stroke: '#000000', strokeWidth: 8, shadow: 0, highlight: '#ff8a1f', highlightMode: 'pop' } },
+    { id: 'clean', name: 'Sobre', style: { font: 'Segoe UI', size: 62, bold: true, color: '#ffffff', stroke: '#000000', strokeWidth: 0, bg: '#000000', bgOpacity: 0.55, shadow: 0, highlight: '', highlightMode: 'none' } },
+    { id: 'word', name: 'Mot à mot', style: { font: 'Arial Black', size: 110, color: '#ffffff', stroke: '#000000', strokeWidth: 9, shadow: 0.5, highlight: '#4cd790', highlightMode: 'single' } },
   ],
 };

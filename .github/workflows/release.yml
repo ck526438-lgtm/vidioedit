@@ -9,20 +9,57 @@ on:
 permissions:
   contents: write
 
+env:
+  WHISPER_VERSION: v1.9.5
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+
+      # Moteur de sous-titres : whisper.cpp compilé pour Windows (sans dépendances)
+      - name: Cache Whisper
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/whisper
+          key: whisper-${{ env.WHISPER_VERSION }}-win-x64-static-v1
+
+      - name: Compiler Whisper
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch $env:WHISPER_VERSION https://github.com/ggml-org/whisper.cpp "$env:RUNNER_TEMP/whisper"
+          cmake -S "$env:RUNNER_TEMP/whisper" -B "$env:RUNNER_TEMP/whisper/build" `
+            -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF `
+            -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build "$env:RUNNER_TEMP/whisper/build" --config Release --target whisper-cli -j 4
+          New-Item -ItemType Directory -Force -Path vendor/whisper | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/whisper/build/bin/Release/whisper-cli.exe" vendor/whisper/
+          Get-ChildItem "$env:RUNNER_TEMP/whisper/build/bin/Release/*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination vendor/whisper/
+          Copy-Item "$env:RUNNER_TEMP/whisper/LICENSE" vendor/whisper/LICENSE-whisper.cpp.txt
+
+      - name: Vérifier Whisper
+        shell: pwsh
+        run: |
+          Get-ChildItem vendor/whisper
+          if (-not (Test-Path vendor/whisper/whisper-cli.exe)) { throw "whisper-cli.exe manquant" }
+          & vendor/whisper/whisper-cli.exe --help | Select-Object -First 3
+
       - run: npm ci
+
       - name: Construire l'installateur et la version portable
         run: npx electron-builder --win --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: VidioEdit-Windows
