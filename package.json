@@ -1,0 +1,60 @@
+{
+  "name": "vidioedit",
+  "productName": "VidioEdit",
+  "version": "1.0.0",
+  "description": "VidioEdit — éditeur vidéo gratuit et open source pour Windows, inspiré de CapCut, avec assistant IA de montage automatique.",
+  "main": "main.js",
+  "author": {
+    "name": "Christ (ck526438-lgtm)",
+    "url": "https://github.com/ck526438-lgtm"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ck526438-lgtm/vidioedit",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ck526438-lgtm/vidioedit.git"
+  },
+  "keywords": ["video-editor", "capcut", "electron", "ffmpeg", "montage", "windows", "open-source"],
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "release": "electron-builder --win --x64 --publish always"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.ck526438.vidioedit",
+    "productName": "VidioEdit",
+    "copyright": "Copyright © 2026 Christ — Licence MIT",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "src/**/*", "assets/**/*", "package.json"],
+    "asarUnpack": ["node_modules/ffmpeg-static/**"],
+    "fileAssociations": [
+      { "ext": "vedit", "name": "Projet VidioEdit", "icon": "assets/icon.ico" }
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}-${target}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VidioEdit",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "license": "LICENSE"
+    },
+    "publish": [{ "provider": "github", "owner": "ck526438-lgtm", "repo": "vidioedit", "releaseType": "release" }]
+  }
+}

@@ -1,0 +1,76 @@
+/* VidioEdit — préréglages (filtres, textes, animations, formats) */
+window.PRESETS = {
+  ratios: [
+    { id: '16:9', label: '16:9', sub: 'YouTube', w: 16, h: 9 },
+    { id: '9:16', label: '9:16', sub: 'TikTok / Reels', w: 9, h: 16 },
+    { id: '1:1', label: '1:1', sub: 'Instagram', w: 1, h: 1 },
+    { id: '4:5', label: '4:5', sub: 'Portrait', w: 4, h: 5 },
+    { id: '4:3', label: '4:3', sub: 'Classique', w: 4, h: 3 },
+    { id: '21:9', label: '21:9', sub: 'Cinéma', w: 21, h: 9 },
+  ],
+
+  defaultAdjust: { brightness: 1, contrast: 1, saturate: 1, hue: 0, blur: 0, grayscale: 0, sepia: 0, invert: 0, vignette: 0 },
+
+  filters: [
+    { id: 'none', name: 'Original', adjust: {} },
+    { id: 'vivid', name: 'Vif', adjust: { saturate: 1.45, contrast: 1.12 } },
+    { id: 'bw', name: 'Noir & blanc', adjust: { grayscale: 1, contrast: 1.15 } },
+    { id: 'vintage', name: 'Vintage', adjust: { sepia: 0.55, contrast: 0.92, brightness: 1.05, vignette: 0.45 } },
+    { id: 'warm', name: 'Chaud', adjust: { sepia: 0.25, saturate: 1.25, hue: -8 } },
+    { id: 'cold', name: 'Froid', adjust: { hue: 15, saturate: 0.9, brightness: 1.03 } },
+    { id: 'cinema', name: 'Cinéma', adjust: { contrast: 1.25, saturate: 0.85, brightness: 0.95, vignette: 0.55 } },
+    { id: 'fade', name: 'Délavé', adjust: { contrast: 0.8, brightness: 1.1, saturate: 0.8 } },
+    { id: 'drama', name: 'Dramatique', adjust: { contrast: 1.4, saturate: 1.1, brightness: 0.9, vignette: 0.6 } },
+    { id: 'dream', name: 'Rêve', adjust: { blur: 1.2, brightness: 1.12, saturate: 1.2 } },
+    { id: 'noir', name: 'Polar', adjust: { grayscale: 1, contrast: 1.5, brightness: 0.9, vignette: 0.7 } },
+    { id: 'pop', name: 'Pop', adjust: { saturate: 1.8, contrast: 1.2, hue: 10 } },
+  ],
+
+  fonts: ['Segoe UI', 'Arial', 'Arial Black', 'Impact', 'Georgia', 'Times New Roman', 'Verdana', 'Trebuchet MS', 'Tahoma', 'Comic Sans MS', 'Courier New', 'Bahnschrift', 'Segoe Script', 'Consolas'],
+
+  defaultText: {
+    content: 'Votre texte',
+    font: 'Segoe UI', size: 90, color: '#ffffff', bold: true, italic: false, align: 'center',
+    stroke: '#000000', strokeWidth: 0, bg: '#000000', bgOpacity: 0, shadow: 0.5, lineHeight: 1.2,
+  },
+
+  textPresets: [
+    { name: 'Simple', style: {} },
+    { name: 'Titre', style: { font: 'Arial Black', size: 140, color: '#ffffff', stroke: '#000000', strokeWidth: 8 } },
+    { name: 'Sous-titre', style: { size: 64, bold: false, bg: '#000000', bgOpacity: 0.6, shadow: 0 } },
+    { name: 'Impact', style: { font: 'Impact', size: 130, color: '#ffde00', stroke: '#000000', strokeWidth: 10, shadow: 0 } },
+    { name: 'Néon', style: { font: 'Bahnschrift', size: 110, color: '#22c3e6', shadow: 1, stroke: '#ffffff', strokeWidth: 2 } },
+    { name: 'Orange', style: { font: 'Arial Black', size: 110, color: '#ff8a1f', stroke: '#ffffff', strokeWidth: 6 } },
+    { name: 'Élégant', style: { font: 'Georgia', size: 96, italic: true, bold: false, color: '#f3e7c9' } },
+    { name: 'Manuscrit', style: { font: 'Segoe Script', size: 100, bold: false, color: '#ffffff' } },
+    { name: 'Étiquette', style: { font: 'Bahnschrift', size: 72, color: '#111111', bg: '#ffffff', bgOpacity: 1, shadow: 0 } },
+    { name: 'Machine', style: { font: 'Courier New', size: 70, color: '#4cd790', bg: '#000000', bgOpacity: 0.7, shadow: 0 } },
+  ],
+
+  animIn: [
+    { id: 'none', name: 'Aucune' },
+    { id: 'fade', name: 'Fondu' },
+    { id: 'zoomIn', name: 'Zoom avant' },
+    { id: 'zoomOut', name: 'Zoom arrière' },
+    { id: 'slideLeft', name: 'Glisser ←' },
+    { id: 'slideRight', name: 'Glisser →' },
+    { id: 'slideUp', name: 'Monter' },
+    { id: 'slideDown', name: 'Descendre' },
+    { id: 'spin', name: 'Rotation' },
+    { id: 'pop', name: 'Rebond' },
+    { id: 'blur', name: 'Flou' },
+    { id: 'typewriter', name: 'Machine à écrire' },
+  ],
+  animOut: [
+    { id: 'none', name: 'Aucune' },
+    { id: 'fade', name: 'Fondu' },
+    { id: 'zoomIn', name: 'Zoom avant' },
+    { id: 'zoomOut', name: 'Zoom arrière' },
+    { id: 'slideLeft', name: 'Glisser ←' },
+    { id: 'slideRight', name: 'Glisser →' },
+    { id: 'slideUp', name: 'Monter' },
+    { id: 'slideDown', name: 'Descendre' },
+    { id: 'spin', name: 'Rotation' },
+    { id: 'blur', name: 'Flou' },
+  ],
+};

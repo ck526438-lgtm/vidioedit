@@ -1,0 +1,27 @@
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+contextBridge.exposeInMainWorld('api', {
+  pickMedia: () => ipcRenderer.invoke('media:pick'),
+  probe: (p) => ipcRenderer.invoke('media:probe', p),
+  waveform: (p) => ipcRenderer.invoke('media:waveform', p),
+  saveProject: (o) => ipcRenderer.invoke('project:save', o),
+  openProject: (p) => ipcRenderer.invoke('project:open', p),
+  pendingProject: () => ipcRenderer.invoke('project:pending'),
+  onOpenProjectPath: (cb) => ipcRenderer.on('project:open-path', (_e, p) => cb(p)),
+  fileExists: (p) => ipcRenderer.invoke('file:exists', p),
+  fileUrl: (p) => ipcRenderer.invoke('file:url', p),
+  showInFolder: (p) => ipcRenderer.invoke('shell:show', p),
+  openExternal: (u) => ipcRenderer.invoke('shell:open', u),
+  appInfo: () => ipcRenderer.invoke('app:info'),
+  pathForFile: (f) => (webUtils && webUtils.getPathForFile ? webUtils.getPathForFile(f) : f.path),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (s) => ipcRenderer.invoke('settings:set', s),
+  aiSilences: (o) => ipcRenderer.invoke('ai:silences', o),
+  aiScenes: (o) => ipcRenderer.invoke('ai:scenes', o),
+  aiChat: (o) => ipcRenderer.invoke('ai:chat', o),
+  exportPick: (n) => ipcRenderer.invoke('export:pick', n),
+  exportStart: (o) => ipcRenderer.invoke('export:start', o),
+  exportFrame: (buf) => ipcRenderer.invoke('export:frame', buf),
+  exportFinish: () => ipcRenderer.invoke('export:finish'),
+  exportCancel: () => ipcRenderer.invoke('export:cancel'),
+});

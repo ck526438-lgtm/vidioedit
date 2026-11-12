@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; img-src 'self' file: data: blob:; media-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>VidioEdit</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Barre supérieure -->
+  <header id="topbar">
+    <div class="brand">
+      <img src="../assets/icon.png" alt="" />
+      <span class="brand-name"><b class="b1">VIDIO</b><b class="b2">EDIT</b></span>
+    </div>
+    <div class="top-actions">
+      <button class="ghost" id="btnNew" title="Nouveau projet (Ctrl+N)">Nouveau</button>
+      <button class="ghost" id="btnOpen" title="Ouvrir (Ctrl+O)">Ouvrir</button>
+      <button class="ghost" id="btnSave" title="Enregistrer (Ctrl+S)">Enregistrer</button>
+      <span class="sep"></span>
+      <button class="icon" id="btnUndo" title="Annuler (Ctrl+Z)">↶</button>
+      <button class="icon" id="btnRedo" title="Rétablir (Ctrl+Y)">↷</button>
+    </div>
+    <div class="project-title"><input id="projectName" value="Projet sans titre" spellcheck="false" /></div>
+    <div class="top-right">
+      <button class="ghost" id="btnAbout" title="À propos">?</button>
+      <button class="primary" id="btnExport">⬆ Exporter</button>
+    </div>
+  </header>
+
+  <main id="workspace">
+    <!-- Panneau gauche -->
+    <aside id="leftPanel" class="panel">
+      <nav class="tabs" id="leftTabs">
+        <button data-tab="media" class="active"><i>▣</i>Médias</button>
+        <button data-tab="ai" class="ai-tab"><i>✨</i>IA</button>
+        <button data-tab="text"><i>T</i>Texte</button>
+        <button data-tab="filters"><i>◐</i>Filtres</button>
+        <button data-tab="anim"><i>✦</i>Effets</button>
+        <button data-tab="canvas"><i>▭</i>Format</button>
+      </nav>
+      <section class="tab-body" data-body="media">
+        <button class="primary wide" id="btnImport">＋ Importer</button>
+        <p class="hint">ou glissez-déposez vos fichiers ici</p>
+        <div id="mediaGrid" class="media-grid"></div>
+      </section>
+      <section class="tab-body hidden ai-body" data-body="ai">
+        <div class="ai-head">
+          <b>Assistant IA</b>
+          <span id="aiMode" class="chip">Mode local</span>
+          <button class="icon" id="aiSettingsBtn" title="Réglages IA">⚙</button>
+        </div>
+        <div id="aiSettings" class="ai-settings hidden">
+          <div class="form-col"><label>Moteur</label><select id="aiProvider"></select></div>
+          <div class="form-col" id="aiModelRow"><label>Modèle</label><input id="aiModel" spellcheck="false" /></div>
+          <div class="form-col" id="aiEndpointRow"><label>Adresse de l'API</label><input id="aiEndpoint" spellcheck="false" /></div>
+          <div class="form-col" id="aiKeyRow"><label>Clé API</label><input id="aiKey" type="password" spellcheck="false" /></div>
+          <p class="hint">Le mode local fonctionne sans Internet. Ollama = IA gratuite sur votre PC. La clé API est chiffrée sur votre ordinateur.</p>
+          <button class="primary wide" id="aiSave">Enregistrer</button>
+        </div>
+        <div id="aiLog" class="ai-log"></div>
+        <div id="aiChips" class="ai-chips">
+          <button data-q="Montage automatique">✨ Montage auto</button>
+          <button data-q="Supprime les silences">🔇 Silences</button>
+          <button data-q="Coupe aux changements de plan">✂ Plans</button>
+          <button data-q="Format TikTok vertical 9:16 et remplir l'écran">📱 TikTok</button>
+          <button data-q="Ajoute des fondus partout">◐ Fondus</button>
+          <button data-q="Filtre cinéma partout">🎬 Cinéma</button>
+        </div>
+        <div id="aiStatus" class="hint"></div>
+        <div class="ai-input">
+          <textarea id="aiInput" rows="2" placeholder="Ex. : accélère le clip 2 en x2 et ajoute le titre « Mon voyage » en haut"></textarea>
+          <button class="primary" id="aiSend" title="Envoyer (Entrée)">➤</button>
+        </div>
+      </section>
+      <section class="tab-body hidden" data-body="text">
+        <button class="primary wide" id="btnAddText">＋ Ajouter un texte</button>
+        <p class="hint">Styles prêts à l'emploi :</p>
+        <div id="textPresets" class="preset-grid"></div>
+      </section>
+      <section class="tab-body hidden" data-body="filters">
+        <p class="hint">Sélectionnez un clip, puis un filtre.</p>
+        <div id="filterGrid" class="preset-grid"></div>
+      </section>
+      <section class="tab-body hidden" data-body="anim">
+        <p class="hint">Animation d'entrée du clip sélectionné :</p>
+        <div id="animInGrid" class="preset-grid small"></div>
+        <p class="hint">Animation de sortie :</p>
+        <div id="animOutGrid" class="preset-grid small"></div>
+        <p class="hint">Transition rapide (fondu entrée + sortie) :</p>
+        <div class="row">
+          <button class="ghost" data-fade="0">Aucune</button>
+          <button class="ghost" data-fade="0.3">0,3 s</button>
+          <button class="ghost" data-fade="0.6">0,6 s</button>
+          <button class="ghost" data-fade="1">1 s</button>
+        </div>
+      </section>
+      <section class="tab-body hidden" data-body="canvas">
+        <p class="hint">Format de la vidéo :</p>
+        <div id="ratioGrid" class="preset-grid small"></div>
+        <p class="hint">Résolution d'export :</p>
+        <select id="resSelect">
+          <option value="720">720p (HD)</option>
+          <option value="1080" selected>1080p (Full HD)</option>
+          <option value="1440">1440p (2K)</option>
+          <option value="2160">2160p (4K)</option>
+        </select>
+        <p class="hint">Images par seconde :</p>
+        <select id="fpsSelect">
+          <option value="24">24 ips</option>
+          <option value="25">25 ips</option>
+          <option value="30" selected>30 ips</option>
+          <option value="50">50 ips</option>
+          <option value="60">60 ips</option>
+        </select>
+        <p class="hint">Couleur de fond :</p>
+        <input type="color" id="bgColor" value="#000000" />
+      </section>
+    </aside>
+
+    <!-- Aperçu -->
+    <section id="previewArea">
+      <div id="stageWrap">
+        <canvas id="stage" width="1920" height="1080"></canvas>
+        <div id="emptyState">
+          <img src="../assets/logo.png" alt="VidioEdit" />
+          <p>Importez des vidéos, images ou musiques pour commencer</p>
+        </div>
+      </div>
+      <div id="transport">
+        <span id="timeNow" class="mono">00:00.00</span>
+        <span class="mono dim">/</span>
+        <span id="timeTotal" class="mono dim">00:00.00</span>
+        <div class="transport-center">
+          <button class="icon" id="btnStart" title="Début (Origine)">⏮</button>
+          <button class="icon play" id="btnPlay" title="Lecture / Pause (Espace)">▶</button>
+          <button class="icon" id="btnEnd" title="Fin (Fin)">⏭</button>
+        </div>
+        <span id="ratioLabel" class="chip">16:9</span>
+        <button class="icon" id="btnFull" title="Plein écran">⛶</button>
+      </div>
+    </section>
+
+    <!-- Inspecteur -->
+    <aside id="rightPanel" class="panel">
+      <div id="inspectorEmpty" class="inspector-empty">
+        <p>Sélectionnez un clip dans la timeline pour modifier ses propriétés.</p>
+        <div class="shortcuts">
+          <h4>Raccourcis</h4>
+          <ul>
+            <li><kbd>Espace</kbd> Lecture / pause</li>
+            <li><kbd>S</kbd> Couper au curseur</li>
+            <li><kbd>Suppr</kbd> Supprimer</li>
+            <li><kbd>Ctrl</kbd>+<kbd>D</kbd> Dupliquer</li>
+            <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd> Annuler / rétablir</li>
+            <li><kbd>←</kbd> <kbd>→</kbd> Image précédente / suivante</li>
+            <li><kbd>Ctrl</kbd>+<kbd>S</kbd> Enregistrer</li>
+            <li><kbd>Ctrl</kbd>+<kbd>E</kbd> Exporter</li>
+          </ul>
+        </div>
+      </div>
+      <div id="inspector" class="hidden"></div>
+    </aside>
+  </main>
+
+  <!-- Timeline -->
+  <section id="timelineArea">
+    <div id="tlToolbar">
+      <button class="icon" id="btnSplit" title="Couper (S)">✂</button>
+      <button class="icon" id="btnDelete" title="Supprimer (Suppr)">🗑</button>
+      <button class="icon" id="btnDuplicate" title="Dupliquer (Ctrl+D)">⧉</button>
+      <span class="sep"></span>
+      <button class="ghost small" id="btnAddVideoTrack">＋ Piste vidéo</button>
+      <button class="ghost small" id="btnAddAudioTrack">＋ Piste audio</button>
+      <span class="sep"></span>
+      <label class="toggle"><input type="checkbox" id="snapToggle" checked /> Magnétisme</label>
+      <div class="spacer"></div>
+      <span class="dim">Zoom</span>
+      <input type="range" id="zoom" min="10" max="400" value="80" />
+      <button class="ghost small" id="btnFit" title="Ajuster à la fenêtre">Ajuster</button>
+    </div>
+    <div id="tlBody">
+      <div id="trackHeads"></div>
+      <div id="tlScroll">
+        <div id="tlInner">
+          <canvas id="ruler" height="26"></canvas>
+          <div id="tracks"></div>
+          <div id="playhead"><div class="ph-knob"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modale d'export -->
+  <div id="exportModal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Exporter la vidéo</h2>
+      <div id="exportForm">
+        <div class="form-row"><label>Résolution</label><select id="expRes">
+          <option value="720">720p</option><option value="1080" selected>1080p</option>
+          <option value="1440">1440p</option><option value="2160">4K</option></select></div>
+        <div class="form-row"><label>Images/s</label><select id="expFps">
+          <option>24</option><option>25</option><option selected>30</option><option>50</option><option>60</option></select></div>
+        <div class="form-row"><label>Qualité</label><select id="expQuality">
+          <option value="high">Haute</option><option value="medium" selected>Recommandée</option><option value="low">Fichier léger</option></select></div>
+        <p class="hint" id="expInfo"></p>
+        <div class="modal-actions">
+          <button class="ghost" id="expCancelForm">Annuler</button>
+          <button class="primary" id="expGo">Exporter en MP4</button>
+        </div>
+      </div>
+      <div id="exportProgress" class="hidden">
+        <div class="progress"><div id="expBar"></div></div>
+        <p id="expStatus" class="hint">Préparation…</p>
+        <div class="modal-actions">
+          <button class="ghost" id="expAbort">Arrêter</button>
+        </div>
+      </div>
+      <div id="exportDone" class="hidden">
+        <p class="success">✔ Export terminé !</p>
+        <p class="hint mono" id="expPath"></p>
+        <div class="modal-actions">
+          <button class="ghost" id="expClose">Fermer</button>
+          <button class="primary" id="expShow">Ouvrir le dossier</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- À propos -->
+  <div id="aboutModal" class="modal hidden">
+    <div class="modal-card about">
+      <img src="../assets/logo.png" alt="VidioEdit" />
+      <p>Éditeur vidéo <b>gratuit et open source</b> pour Windows.</p>
+      <p class="hint" id="aboutVersion"></p>
+      <p class="hint">Licence MIT — propulsé par Electron et FFmpeg.</p>
+      <div class="modal-actions">
+        <button class="ghost" id="aboutGithub">Code source sur GitHub</button>
+        <button class="primary" id="aboutClose">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <div id="dropOverlay" class="hidden"><div>Déposez vos médias ici</div></div>
+
+  <script src="presets.js"></script>
+  <script src="render.js"></script>
+  <script src="app.js"></script>
+  <script src="ai.js"></script>
+</body>
+</html>
