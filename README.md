@@ -60,8 +60,8 @@ Les clés API sont chiffrées sur votre ordinateur (Windows DPAPI).
 ## ⬇ Installation
 
 Téléchargez dans [Releases](https://github.com/ck526438-lgtm/vidioedit/releases/latest) :
-- `VidioEdit-x.y.z-x64-nsis.exe` — installateur (raccourcis bureau et menu Démarrer)
-- `VidioEdit-x.y.z-x64-portable.exe` — version portable, sans installation
+- `VidioEdit-Setup-x.y.z.exe` — installateur (raccourcis bureau et menu Démarrer)
+- `VidioEdit-Portable-x.y.z.exe` — version portable, sans installation
 
 > L'application n'est pas signée : si Windows SmartScreen s'affiche, cliquez sur **Informations complémentaires → Exécuter quand même**.
 

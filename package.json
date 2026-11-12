@@ -14,7 +14,15 @@
     "type": "git",
     "url": "https://github.com/ck526438-lgtm/vidioedit.git"
   },
-  "keywords": ["video-editor", "capcut", "electron", "ffmpeg", "montage", "windows", "open-source"],
+  "keywords": [
+    "video-editor",
+    "capcut",
+    "electron",
+    "ffmpeg",
+    "montage",
+    "windows",
+    "open-source"
+  ],
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win --x64",
@@ -31,19 +39,42 @@
     "appId": "com.ck526438.vidioedit",
     "productName": "VidioEdit",
     "copyright": "Copyright © 2026 Christ — Licence MIT",
-    "directories": { "output": "dist" },
-    "files": ["main.js", "preload.js", "src/**/*", "assets/**/*", "package.json"],
-    "asarUnpack": ["node_modules/ffmpeg-static/**"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
     "fileAssociations": [
-      { "ext": "vedit", "name": "Projet VidioEdit", "icon": "assets/icon.ico" }
+      {
+        "ext": "vedit",
+        "name": "Projet VidioEdit",
+        "icon": "assets/icon.ico"
+      }
     ],
     "win": {
       "icon": "assets/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
-      ],
-      "artifactName": "${productName}-${version}-${arch}-${target}.${ext}"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -53,8 +84,19 @@
       "shortcutName": "VidioEdit",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "license": "LICENSE"
+      "license": "LICENSE",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
-    "publish": [{ "provider": "github", "owner": "ck526438-lgtm", "repo": "vidioedit", "releaseType": "release" }]
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ck526438-lgtm",
+        "repo": "vidioedit",
+        "releaseType": "release"
+      }
+    ],
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
+    }
   }
 }
