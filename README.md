@@ -33,7 +33,25 @@
 - 10 styles de texte, retour à la ligne automatique
 - 40 autocollants emoji animés
 
-**Audio** — volume jusqu'à 200 %, fondus, détacher l'audio, **réduction du bruit de fond**
+**IA visuelle**
+- **Suppression de l'arrière-plan** des personnes, sans fond vert (MediaPipe, hors-ligne)
+- **Recadrage automatique** : suit la personne et pose les images clés (idéal pour passer du 16:9 au 9:16)
+- **Incrustation fond vert / bleu** (chroma key) avec pipette, tolérance, douceur et anti-reflet
+
+**Couleur & composition**
+- **Courbes** RVB / rouge / vert / bleu avec éditeur graphique et préréglages (contraste S, ciné, chaud, froid…)
+- **LUT 3D** (.cube) avec intensité réglable
+- **Masques** : rectangle, ellipse, linéaire, bande, cœur, étoile — contour doux, inversion
+- **16 modes de fusion** (écran, produit, incrustation, lumière douce…)
+
+**Audio & voix**
+- **Bibliothèque musicale générée** : 8 styles (lo-fi, pop, vlog, cinématique, trap, **afrobeat/amapiano**, entreprise, suspense), chaque morceau est unique et **100 % libre de droits**
+- **16 bruitages** : whoosh, pop, ding, impact, montée, applaudissements, clavier…
+- **Synthèse vocale** (voix Windows hors-ligne ou API) et « Lire ce texte à voix haute »
+- **9 effets de voix** : grave, aiguë, monstre, robot, écho, grotte, radio, téléphone, chuchotement
+- **Baisse automatique de la musique** quand quelqu'un parle (ducking)
+- Volume jusqu'à 200 %, fondus, détacher l'audio, **réduction du bruit de fond**
+- Liens vers des bibliothèques gratuites (Pixabay Music, Free Music Archive, Mixkit, Freesound)
 
 **Formats** — 16:9 (YouTube), 9:16 (TikTok / Reels / Shorts), 1:1, 4:5, 4:3, 21:9
 
@@ -57,6 +75,13 @@ Onglet **✨ IA** : décrivez le montage, l'assistant l'applique (et tout s'annu
 | « Format TikTok et fond flou » | Passe en 9:16 et remplit les bandes noires |
 | « Enlève le bruit de fond » | Réduction du bruit à l'export |
 | « Ajoute un sticker 🔥 » | Autocollant animé au curseur |
+| « Supprime l'arrière-plan du clip 1 » | Détourage IA de la personne |
+| « Format TikTok puis recadrage auto » | 9:16 qui suit la personne |
+| « Ajoute une musique afro de 30 s » | Musique libre de droits générée |
+| « Voix off "Bienvenue sur ma chaîne" » | Synthèse vocale au curseur |
+| « Voix de robot sur le clip 2 » | Effet de voix |
+| « Baisse la musique quand on parle » | Ducking à l'export |
+| « Masque cœur », « courbes chaudes » | Masque et étalonnage |
 
 Moteurs disponibles (⚙ dans l'onglet IA) :
 - **Local** — par défaut, hors-ligne, gratuit : comprend les commandes en français ci-dessus
@@ -109,22 +134,24 @@ Architecture :
 - `src/render.js` — moteur de composition partagé entre l'aperçu et l'export (transitions, images clés, effets, sous-titres) : ce que vous voyez = ce que vous exportez
 - `src/app.js` — interface : timeline, inspecteur, lecture, export
 - `src/ai.js` — assistant IA : compréhension des commandes et exécution des actions
+- `src/segment.js` — détourage IA (MediaPipe) et recadrage automatique
+- `src/music.js` — synthétiseur de musiques et bruitages libres de droits
 - `src/presets.js` — filtres, styles de texte, animations, formats
 
 Publier une nouvelle version : changez `version` dans `package.json` et poussez sur `main` — GitHub Actions compile et publie les `.exe` dans une release `v<version>` automatiquement.
 
 ## 🗺 Feuille de route
 
-- Suppression d'arrière-plan par IA (sans fond vert) et incrustation chroma
-- Recadrage automatique qui suit le sujet (9:16)
-- Synthèse vocale, changeur de voix, baisse auto de la musique sous la voix
-- Masques et modes de fusion, courbes de couleur et LUT
-- Bibliothèque de musiques et effets libres de droits, modèles de montage
+- Suppression d'arrière-plan pour les objets (pas seulement les personnes)
+- Voix neuronales hors-ligne (Piper) et clonage de voix
+- Modèles de montage prêts à l'emploi, détection du rythme pour couper au tempo
 - Export GIF / WebM, publication directe TikTok / YouTube
+- Version macOS / Linux
 
 Les contributions sont les bienvenues : ouvrez une *issue* ou une *pull request*.
 
 ## 📄 Licence
 
 [MIT](LICENSE) — libre et gratuit, y compris pour un usage commercial.
-VidioEdit utilise [Electron](https://www.electronjs.org/) et [FFmpeg](https://ffmpeg.org/) (via `ffmpeg-static`, licence GPL).
+VidioEdit utilise [Electron](https://www.electronjs.org/), [FFmpeg](https://ffmpeg.org/) (via `ffmpeg-static`, licence GPL), [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) et [MediaPipe Selfie Segmentation](https://github.com/google-ai-edge/mediapipe) (Apache 2.0).
+Les musiques et bruitages générés par VidioEdit vous appartiennent et sont utilisables sans attribution, y compris commercialement.

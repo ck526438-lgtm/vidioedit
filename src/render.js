@@ -275,14 +275,181 @@
   }
   let pixCanvas = null;
 
-  function drawMedia(ctx, el, clip, W, H, k, local, extraBlur) {
+  // ------------------------------------------------------------ Traitement d'image (détourage, chroma, masque, courbes, LUT)
+  const procCache = new Map();
+  const lutCache = new Map(); // chemin -> { size, data }
+  function curveTable(points) {
+    const pts = (points && points.length ? points : [[0, 0], [1, 1]]).slice().sort((a, b) => a[0] - b[0]);
+    const tab = new Uint8ClampedArray(256);
+    for (let i = 0; i < 256; i++) {
+      const x = i / 255;
+      let j = 0;
+      while (j < pts.length - 2 && x > pts[j + 1][0]) j++;
+      const a = pts[j], b = pts[Math.min(j + 1, pts.length - 1)];
+      let y;
+      if (x <= pts[0][0]) y = pts[0][1];
+      else if (x >= pts[pts.length - 1][0]) y = pts[pts.length - 1][1];
+      else {
+        // interpolation monotone (Hermite) pour une courbe douce
+        const p0 = pts[Math.max(0, j - 1)], p3 = pts[Math.min(pts.length - 1, j + 2)];
+        const h = b[0] - a[0] || 1e-6, u = (x - a[0]) / h;
+        const m1 = j > 0 ? ((b[1] - p0[1]) / (b[0] - p0[0] || 1e-6)) * h : b[1] - a[1];
+        const m2 = j + 2 < pts.length ? ((p3[1] - a[1]) / (p3[0] - a[0] || 1e-6)) * h : b[1] - a[1];
+        const u2 = u * u, u3 = u2 * u;
+        y = (2 * u3 - 3 * u2 + 1) * a[1] + (u3 - 2 * u2 + u) * m1 + (-2 * u3 + 3 * u2) * b[1] + (u3 - u2) * m2;
+      }
+      tab[i] = Math.round(clamp(y, 0, 1) * 255);
+    }
+    return tab;
+  }
+  const isIdentityCurve = (p) => !p || !p.length || (p.length === 2 && p[0][0] === 0 && p[0][1] === 0 && p[1][0] === 1 && p[1][1] === 1);
+  function curvesActive(c) { return c.curves && ['rgb', 'r', 'g', 'b'].some((k) => !isIdentityCurve(c.curves[k])); }
+  function needsProcessing(c) {
+    return !!(c.removeBg || (c.chroma && c.chroma.on) || (c.mask && c.mask.type && c.mask.type !== 'none') || curvesActive(c) || (c.lut && c.lut.path && lutCache.get(c.lut.path)));
+  }
+
+  function shapePath(x, m, w, h) {
+    const cx = m.x * w, cy = m.y * h, mw = m.w * w, mh = m.h * h;
+    x.save();
+    x.translate(cx, cy);
+    x.rotate(((m.rotation || 0) * Math.PI) / 180);
+    x.beginPath();
+    switch (m.type) {
+      case 'circle': x.ellipse(0, 0, mw / 2, mh / 2, 0, 0, Math.PI * 2); break;
+      case 'linear': x.rect(-w * 3, -h * 3, w * 6, h * 3); break; // garde la partie au-dessus de la ligne
+      case 'band': x.rect(-w * 3, -mh / 2, w * 6, mh); break;
+      case 'heart': {
+        const s = Math.min(mw, mh) / 2;
+        x.moveTo(0, s * 0.9);
+        x.bezierCurveTo(-s * 1.6, -s * 0.2, -s * 0.7, -s * 1.3, 0, -s * 0.45);
+        x.bezierCurveTo(s * 0.7, -s * 1.3, s * 1.6, -s * 0.2, 0, s * 0.9);
+        break;
+      }
+      case 'star': {
+        const R1 = Math.min(mw, mh) / 2, R2 = R1 * 0.45;
+        for (let i = 0; i < 10; i++) {
+          const r = i % 2 ? R2 : R1, a = -Math.PI / 2 + (i * Math.PI) / 5;
+          i ? x.lineTo(Math.cos(a) * r, Math.sin(a) * r) : x.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        x.closePath();
+        break;
+      }
+      default: x.rect(-mw / 2, -mh / 2, mw, mh);
+    }
+    x.restore();
+  }
+
+  function processSource(el, clip, src, sx, sy, sw, sh, sw0, sh0, maxDim) {
+    const f = Math.min(1, maxDim / Math.max(sw, sh));
+    const pw = Math.max(2, Math.round(sw * f)), ph = Math.max(2, Math.round(sh * f));
+    let P = procCache.get(clip.id);
+    if (!P) { P = document.createElement('canvas'); procCache.set(clip.id, P); }
+    if (P.width !== pw || P.height !== ph) { P.width = pw; P.height = ph; }
+    const x = P.getContext('2d', { willReadFrequently: true });
+    x.globalCompositeOperation = 'source-over';
+    x.filter = 'none';
+    x.clearRect(0, 0, pw, ph);
+    x.drawImage(el, sx, sy, sw, sh, 0, 0, pw, ph);
+
+    const ck = clip.chroma && clip.chroma.on ? clip.chroma : null;
+    const lut = clip.lut && clip.lut.path ? lutCache.get(clip.lut.path) : null;
+    const curves = curvesActive(clip);
+    if (ck || lut || curves) {
+      const img = x.getImageData(0, 0, pw, ph);
+      const d = img.data;
+      let tR, tG, tB;
+      if (curves) {
+        const all = curveTable(clip.curves.rgb), cr = curveTable(clip.curves.r), cg = curveTable(clip.curves.g), cb = curveTable(clip.curves.b);
+        tR = new Uint8ClampedArray(256); tG = new Uint8ClampedArray(256); tB = new Uint8ClampedArray(256);
+        for (let i = 0; i < 256; i++) { tR[i] = cr[all[i]]; tG[i] = cg[all[i]]; tB[i] = cb[all[i]]; }
+      }
+      let kCb = 0, kCr = 0, tol = 0, soft = 0, spill = 0;
+      if (ck) {
+        const hex = (ck.color || '#00ff00').replace('#', '');
+        const kr = parseInt(hex.slice(0, 2), 16), kg = parseInt(hex.slice(2, 4), 16), kb = parseInt(hex.slice(4, 6), 16);
+        kCb = -0.1687 * kr - 0.3313 * kg + 0.5 * kb;
+        kCr = 0.5 * kr - 0.4187 * kg - 0.0813 * kb;
+        tol = 10 + (ck.tolerance != null ? ck.tolerance : 0.4) * 110;
+        soft = 4 + (ck.softness != null ? ck.softness : 0.3) * 80;
+        spill = ck.spill != null ? ck.spill : 0.5;
+      }
+      const N = lut ? lut.size : 0, L = lut ? lut.data : null, li = lut ? clamp(clip.lut.intensity != null ? clip.lut.intensity : 1, 0, 1) : 0;
+      for (let i = 0; i < d.length; i += 4) {
+        let r = d[i], g = d[i + 1], b = d[i + 2];
+        if (ck) {
+          const cb = -0.1687 * r - 0.3313 * g + 0.5 * b, cr = 0.5 * r - 0.4187 * g - 0.0813 * b;
+          const dist = Math.hypot(cb - kCb, cr - kCr);
+          const a = dist <= tol ? 0 : dist >= tol + soft ? 1 : (dist - tol) / soft;
+          d[i + 3] = d[i + 3] * a;
+          if (spill > 0 && a < 1 && a > 0) {
+            // suppression du débordement de couleur (vert/bleu) sur les bords
+            if (g > r && g > b) g = g - (g - Math.max(r, b)) * spill;
+            else if (b > r && b > g) b = b - (b - Math.max(r, g)) * spill;
+          }
+        }
+        if (L) {
+          const fr = (r / 255) * (N - 1), fg = (g / 255) * (N - 1), fb = (b / 255) * (N - 1);
+          const r0 = Math.floor(fr), g0 = Math.floor(fg), b0 = Math.floor(fb);
+          const r1 = Math.min(N - 1, r0 + 1), g1 = Math.min(N - 1, g0 + 1), b1 = Math.min(N - 1, b0 + 1);
+          const dr = fr - r0, dg = fg - g0, db = fb - b0;
+          const idx = (R_, G_, B_) => (R_ + G_ * N + B_ * N * N) * 3;
+          const out = [0, 0, 0];
+          for (let c = 0; c < 3; c++) {
+            const c000 = L[idx(r0, g0, b0) + c], c100 = L[idx(r1, g0, b0) + c], c010 = L[idx(r0, g1, b0) + c], c110 = L[idx(r1, g1, b0) + c];
+            const c001 = L[idx(r0, g0, b1) + c], c101 = L[idx(r1, g0, b1) + c], c011 = L[idx(r0, g1, b1) + c], c111 = L[idx(r1, g1, b1) + c];
+            const c00 = c000 + (c100 - c000) * dr, c10 = c010 + (c110 - c010) * dr, c01 = c001 + (c101 - c001) * dr, c11 = c011 + (c111 - c011) * dr;
+            const c0 = c00 + (c10 - c00) * dg, c1 = c01 + (c11 - c01) * dg;
+            out[c] = (c0 + (c1 - c0) * db) * 255;
+          }
+          r = r + (out[0] - r) * li; g = g + (out[1] - g) * li; b = b + (out[2] - b) * li;
+        }
+        if (tR) { r = tR[r | 0]; g = tG[g | 0]; b = tB[b | 0]; }
+        d[i] = r; d[i + 1] = g; d[i + 2] = b;
+      }
+      x.putImageData(img, 0, 0);
+    }
+
+    if (clip.removeBg) {
+      const m = src.mask && src.mask(clip);
+      if (m) {
+        x.globalCompositeOperation = 'destination-in';
+        x.filter = `blur(${Math.max(0.5, (clip.bgFeather != null ? clip.bgFeather : 0.2) * 5 * f * (sw / 640)).toFixed(1)}px)`;
+        // le masque couvre l'image source entière : on applique le même recadrage
+        const msx = (sx / sw0) * m.width, msy = (sy / sh0) * m.height, msw = (sw / sw0) * m.width, msh = (sh / sh0) * m.height;
+        x.drawImage(m, msx, msy, msw, msh, 0, 0, pw, ph);
+        // deuxième passe : resserre le contour (alpha²) pour limiter le liseré de l'ancien fond
+        x.filter = 'none';
+        x.drawImage(m, msx, msy, msw, msh, 0, 0, pw, ph);
+        x.globalCompositeOperation = 'source-over';
+      }
+    }
+    const mk = clip.mask;
+    if (mk && mk.type && mk.type !== 'none') {
+      x.globalCompositeOperation = mk.invert ? 'destination-out' : 'destination-in';
+      const fe = (mk.feather || 0) * Math.max(pw, ph) * 0.08;
+      if (fe > 0.3) x.filter = `blur(${fe.toFixed(1)}px)`;
+      x.fillStyle = '#fff';
+      shapePath(x, mk, pw, ph);
+      x.fill();
+      x.filter = 'none';
+      x.globalCompositeOperation = 'source-over';
+    }
+    return P;
+  }
+
+  function drawMedia(ctx, el, clip, W, H, k, local, extraBlur, src) {
     const { w: sw0, h: sh0 } = mediaSize(el);
     if (!sw0 || !sh0 || !isReady(el)) return null;
     const cr = Object.assign({ l: 0, t: 0, r: 0, b: 0 }, clip.crop || {});
-    const sx = sw0 * cr.l, sy = sh0 * cr.t;
-    const sw = Math.max(1, sw0 * (1 - cr.l - cr.r)), sh = Math.max(1, sh0 * (1 - cr.t - cr.b));
-    const fit = clip.fit === 'cover' ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
-    const dw = sw * fit, dh = sh * fit;
+    let sx = sw0 * cr.l, sy = sh0 * cr.t;
+    let sw = Math.max(1, sw0 * (1 - cr.l - cr.r)), sh = Math.max(1, sh0 * (1 - cr.t - cr.b));
+    let fitW = sw, fitH = sh;
+    if (needsProcessing(clip)) {
+      el = processSource(el, clip, src || {}, sx, sy, sw, sh, sw0, sh0, src && src.procMax ? src.procMax : 1280);
+      sx = 0; sy = 0; sw = el.width; sh = el.height;
+    }
+    const fit = clip.fit === 'cover' ? Math.max(W / fitW, H / fitH) : Math.min(W / fitW, H / fitH);
+    const dw = fitW * fit, dh = fitH * fit;
     const fx = clip.effect && clip.effect.type !== 'none' ? clip.effect : null;
     const I = fx ? (fx.intensity != null ? fx.intensity : 0.5) : 0;
     ctx.filter = filterString(clip.adjust, extraBlur, k);
@@ -393,6 +560,7 @@
     if (alpha <= 0.002) return;
     ctx.save();
     ctx.globalAlpha = alpha;
+    if (clip.blend && clip.blend !== 'normal') ctx.globalCompositeOperation = clip.blend;
     const cx = W / 2 + tr.x * W / 2 + (a.dx + mo.dx) * W;
     const cy = H / 2 + tr.y * H / 2 + (a.dy + mo.dy) * H;
     ctx.translate(cx, cy);
@@ -405,7 +573,7 @@
       sz = clip.text && clip.text.words && clip.text.words.length ? drawCaption(ctx, clip, k, localA, W) : drawText(ctx, clip, k, a.chars, W);
     } else {
       const el = src.media(clip, t);
-      if (el) sz = drawMedia(ctx, el, clip, W, H, k, localA, a.blur);
+      if (el) sz = drawMedia(ctx, el, clip, W, H, k, localA, a.blur, src);
     }
     if (sz && bounds) bounds[clip.id] = { cx, cy, w: sz.w * Math.abs(sc), h: sz.h * Math.abs(sc) };
     ctx.restore();
@@ -549,5 +717,27 @@
     return bounds;
   }
 
-  window.Renderer = { renderFrame, animState, filterString, prepare, srcTime, kfValue, transformAt, TKEYS };
+  function parseCube(text) {
+    let size = 0;
+    const vals = [];
+    let dmin = [0, 0, 0], dmax = [1, 1, 1];
+    text.split(/\r?\n/).forEach((line) => {
+      const l = line.trim();
+      if (!l || l[0] === '#') return;
+      if (/^LUT_3D_SIZE/i.test(l)) { size = parseInt(l.split(/\s+/)[1], 10); return; }
+      if (/^DOMAIN_MIN/i.test(l)) { dmin = l.split(/\s+/).slice(1).map(Number); return; }
+      if (/^DOMAIN_MAX/i.test(l)) { dmax = l.split(/\s+/).slice(1).map(Number); return; }
+      if (/^[A-Z_]/i.test(l)) return;
+      const p = l.split(/\s+/).map(Number);
+      if (p.length >= 3 && p.every((n) => !isNaN(n))) vals.push(p[0], p[1], p[2]);
+    });
+    if (!size || vals.length < size * size * size * 3) throw new Error('Fichier .cube invalide (LUT 3D attendue)');
+    const data = new Float32Array(size * size * size * 3);
+    for (let i = 0; i < data.length; i++) { const c = i % 3; data[i] = (vals[i] - dmin[c]) / ((dmax[c] - dmin[c]) || 1); }
+    return { size, data };
+  }
+  function registerLut(path, text) { lutCache.set(path, parseCube(text)); }
+  function forgetClip(id) { procCache.delete(id); }
+
+  window.Renderer = { renderFrame, animState, filterString, prepare, srcTime, kfValue, transformAt, TKEYS, registerLut, hasLut: (p) => lutCache.has(p), forgetClip, curveTable, needsProcessing };
 })();

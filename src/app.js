@@ -44,6 +44,7 @@
   let playing = false;
   let pps = 80; // pixels par seconde
   let undoStack = [];
+  let pipette = null; // fonction appelée au prochain clic sur l'aperçu (choix de couleur)
   let redoStack = [];
 
   const mediaById = (id) => project.media.find((m) => m.id === id);
@@ -53,7 +54,7 @@
   const totalDuration = () => project.clips.reduce((m, c) => Math.max(m, c.start + c.dur), 0);
 
   // ---------------------------------------------------------------- Historique
-  const snapshot = () => JSON.stringify({ tracks: project.tracks, clips: project.clips, ratio: project.ratio, bg: project.bg, bgMode: project.bgMode, res: project.res, fps: project.fps });
+  const snapshot = () => JSON.stringify({ tracks: project.tracks, clips: project.clips, ratio: project.ratio, bg: project.bg, bgMode: project.bgMode, ducking: project.ducking, res: project.res, fps: project.fps });
   function pushHistory() {
     undoStack.push(snapshot());
     if (undoStack.length > 150) undoStack.shift();
@@ -105,6 +106,11 @@
       flipH: false, flipV: false,
       transition: { type: 'none', dur: 0.5 }, keyframes: {}, crop: { l: 0, t: 0, r: 0, b: 0 },
       effect: { type: 'none', intensity: 0.5 }, denoise: false,
+      removeBg: false, bgFeather: 0.2,
+      chroma: { on: false, color: '#00ff00', tolerance: 0.4, softness: 0.3, spill: 0.5 },
+      mask: { type: 'none', x: 0.5, y: 0.5, w: 0.6, h: 0.6, rotation: 0, feather: 0.1, invert: false },
+      curves: { rgb: [[0, 0], [1, 1]], r: [[0, 0], [1, 1]], g: [[0, 0], [1, 1]], b: [[0, 0], [1, 1]] },
+      lut: null, blend: 'normal',
     }, extra);
   }
   const trackKindFor = (clipKind) => (clipKind === 'audio' ? 'audio' : 'visual');
@@ -407,7 +413,34 @@
     return el;
   }
 
+  // Masques de détourage (aperçu) : calculés en arrière-plan, la dernière version est utilisée
+  const maskCache = new Map();
+  let segWarned = false;
+  function updateMasks(t) {
+    if (!window.Segmenter) return;
+    project.clips.forEach((c) => {
+      if (!c.removeBg || (c.kind !== 'video' && c.kind !== 'image')) return;
+      if (t < c.start - 0.6 || t > c.start + c.dur + 0.6) return;
+      const el = previewSrc.media(c, t);
+      if (!el) return;
+      const ready = el.tagName === 'VIDEO' ? el.readyState >= 2 : el.complete && el.naturalWidth;
+      if (!ready) return;
+      const key = el.tagName === 'VIDEO' ? el.currentTime.toFixed(3) : 'img';
+      let mc = maskCache.get(c.id);
+      if (!mc) { mc = { canvas: document.createElement('canvas'), key: null, busy: false }; maskCache.set(c.id, mc); }
+      if (mc.busy || mc.key === key || mc.failed) return;
+      mc.busy = true;
+      const sw = el.videoWidth || el.naturalWidth, sh = el.videoHeight || el.naturalHeight;
+      const mw = 384, mh = Math.max(2, Math.round((384 * sh) / sw));
+      window.Segmenter.mask(el, mw, mh, mc.canvas)
+        .then(() => { mc.key = key; })
+        .catch((e) => { mc.failed = true; if (!segWarned) { segWarned = true; toast(`Détourage indisponible : ${e.message || e}`, 5000); } })
+        .finally(() => { mc.busy = false; if (!playing) requestRender(); });
+    });
+  }
+
   const previewSrc = {
+    mask(clip) { const mc = maskCache.get(clip.id); return mc && mc.key != null ? mc.canvas : null; },
     media(clip, _t) {
       const m = mediaById(clip.mediaId);
       if (!m || m.missing) return null;
@@ -455,6 +488,7 @@
   function draw() {
     renderQueued = false;
     syncMedia(time);
+    updateMasks(time);
     lastBounds = R.renderFrame(sctx, project, time, previewSrc, { selectedId: playing ? null : selectedId });
     $('#timeNow').textContent = fmtTime(time);
     positionPlayhead();
@@ -508,6 +542,18 @@
     };
     stage.addEventListener('mousedown', (e) => {
       const p = toCanvas(e);
+      if (pipette) {
+        const fn = pipette;
+        pipette = null;
+        const c = selected();
+        const was = c && c.chroma ? c.chroma.on : false;
+        if (c && c.chroma) c.chroma.on = false;
+        R.renderFrame(sctx, project, time, previewSrc, { clean: true });
+        const d = sctx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
+        if (c && c.chroma) c.chroma.on = was;
+        fn('#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join(''));
+        return;
+      }
       const order = [];
       project.tracks.forEach((t) => { if (t.kind === 'visual') project.clips.forEach((c) => { if (c.trackId === t.id && lastBounds[c.id]) order.push(c); }); });
       const hit = order.reverse().find((c) => {
@@ -1000,6 +1046,7 @@
           toast('Style appliqué à tous les sous-titres');
         }, false]]);
       }
+      buttons(g, [['🔊 Lire ce texte à voix haute', () => speakText(s.content, c.start), false, 'Synthèse vocale placée sur une piste audio']]);
       const g2 = group('Contour & fond');
       const sc = document.createElement('input'); sc.type = 'color'; sc.value = s.stroke;
       sc.oninput = () => { beginEdit(); s.stroke = sc.value; requestRender(); }; sc.onchange = endEdit;
@@ -1087,6 +1134,86 @@
       buttons(g, [['Sans recadrage', () => { pushHistory(); c.crop = { l: 0, t: 0, r: 0, b: 0 }; }, false]]);
     }
 
+    // --- Détourage IA & fond vert
+    if (c.kind === 'video' || c.kind === 'image') {
+      const g = group('Détourage');
+      buttons(g, [
+        [c.removeBg ? '✂ Arrière-plan supprimé (IA)' : '✂ Supprimer l\'arrière-plan (IA)', () => { pushHistory(); c.removeBg = !c.removeBg; maskCache.delete(c.id); }, c.removeBg, 'Détoure automatiquement les personnes'],
+      ]);
+      if (c.removeBg) slider(g, 'Adoucir bord', () => (c.bgFeather != null ? c.bgFeather : 0.2), (v) => (c.bgFeather = v), 0, 1, 0.01, pct);
+      c.chroma = c.chroma || { on: false, color: '#00ff00', tolerance: 0.4, softness: 0.3, spill: 0.5 };
+      const ck = c.chroma;
+      buttons(g, [
+        [ck.on ? '🟩 Fond vert actif' : '🟩 Incrustation (fond vert)', () => { pushHistory(); ck.on = !ck.on; }, ck.on, 'Rend transparente une couleur (chroma key)'],
+      ]);
+      if (ck.on) {
+        const col = document.createElement('input'); col.type = 'color'; col.value = ck.color;
+        col.oninput = () => { beginEdit(); ck.color = col.value; requestRender(); }; col.onchange = endEdit;
+        const wrap = document.createElement('div'); wrap.className = 'row';
+        const pick = document.createElement('button'); pick.className = 'ghost small'; pick.textContent = '💧 Pipette';
+        pick.title = 'Cliquez ensuite sur l\'aperçu pour choisir la couleur à retirer';
+        pick.onclick = () => { pipette = (hex) => { pushHistory(); ck.color = hex; refreshAll(); }; toast('Cliquez sur la couleur à retirer dans l\'aperçu'); };
+        wrap.append(col, pick);
+        fieldRaw(g, 'Couleur', wrap);
+        slider(g, 'Tolérance', () => ck.tolerance, (v) => (ck.tolerance = v), 0, 1, 0.01, pct);
+        slider(g, 'Douceur', () => ck.softness, (v) => (ck.softness = v), 0, 1, 0.01, pct);
+        slider(g, 'Anti-reflet', () => ck.spill, (v) => (ck.spill = v), 0, 1, 0.01, pct);
+      }
+    }
+
+    // --- Masque
+    if (c.kind === 'video' || c.kind === 'image') {
+      const g = group('Masque');
+      c.mask = c.mask || { type: 'none', x: 0.5, y: 0.5, w: 0.6, h: 0.6, rotation: 0, feather: 0.1, invert: false };
+      const mk = c.mask;
+      const sel = document.createElement('select');
+      [['none', 'Aucun'], ['rect', 'Rectangle'], ['circle', 'Cercle / ellipse'], ['linear', 'Linéaire'], ['band', 'Bande (miroir)'], ['heart', 'Cœur'], ['star', 'Étoile']].forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; sel.appendChild(o); });
+      sel.value = mk.type;
+      sel.onchange = () => { pushHistory(); mk.type = sel.value; refreshAll(); };
+      fieldRaw(g, 'Forme', sel);
+      if (mk.type !== 'none') {
+        slider(g, 'Centre X', () => mk.x, (v) => (mk.x = v), 0, 1, 0.005, pct);
+        slider(g, 'Centre Y', () => mk.y, (v) => (mk.y = v), 0, 1, 0.005, pct);
+        if (mk.type !== 'linear') {
+          if (mk.type !== 'band') slider(g, 'Largeur', () => mk.w, (v) => (mk.w = v), 0.02, 1.5, 0.005, pct);
+          slider(g, 'Hauteur', () => mk.h, (v) => (mk.h = v), 0.02, 1.5, 0.005, pct);
+        }
+        slider(g, 'Rotation', () => mk.rotation, (v) => (mk.rotation = v), -180, 180, 1, (v) => `${v}°`);
+        slider(g, 'Contour doux', () => mk.feather, (v) => (mk.feather = v), 0, 1, 0.01, pct);
+        buttons(g, [['⇆ Inverser le masque', () => { pushHistory(); mk.invert = !mk.invert; }, mk.invert]]);
+      }
+    }
+
+    // --- Couleur avancée : courbes & LUT
+    if (c.kind === 'video' || c.kind === 'image') {
+      const g = group('Courbes & LUT');
+      g.appendChild(curveEditor(c));
+      c.lut = c.lut || null;
+      const items = [['🎨 Importer une LUT (.cube)', async () => {
+        const f = await api.pickLut();
+        if (!f) return;
+        try { R.registerLut(f, await api.readText(f)); pushHistory(); c.lut = { path: f, name: f.split(/[\\/]/).pop(), intensity: 1 }; refreshAll(); toast('LUT appliquée'); } catch (e) { toast(e.message || String(e), 4000); }
+      }, false]];
+      if (c.lut) items.push(['Retirer la LUT', () => { pushHistory(); c.lut = null; }, false]);
+      buttons(g, items);
+      if (c.lut) {
+        const p = document.createElement('p'); p.className = 'hint'; p.textContent = `LUT : ${c.lut.name}${R.hasLut(c.lut.path) ? '' : ' (fichier introuvable)'}`; g.appendChild(p);
+        slider(g, 'Intensité', () => c.lut.intensity, (v) => (c.lut.intensity = v), 0, 1, 0.01, pct);
+      }
+    }
+
+    // --- Mode de fusion
+    if (c.kind !== 'audio') {
+      const g = group('Fusion');
+      const sel = document.createElement('select');
+      [['normal', 'Normal'], ['screen', 'Superposition claire (écran)'], ['multiply', 'Produit'], ['overlay', 'Incrustation'], ['soft-light', 'Lumière douce'], ['hard-light', 'Lumière crue'],
+        ['lighten', 'Éclaircir'], ['darken', 'Assombrir'], ['color-dodge', 'Densité couleur −'], ['color-burn', 'Densité couleur +'], ['difference', 'Différence'], ['exclusion', 'Exclusion'],
+        ['hue', 'Teinte'], ['saturation', 'Saturation'], ['color', 'Couleur'], ['luminosity', 'Luminosité']].forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; sel.appendChild(o); });
+      sel.value = c.blend || 'normal';
+      sel.onchange = () => { pushHistory(); c.blend = sel.value; requestRender(); };
+      fieldRaw(g, 'Mode', sel);
+    }
+
     // --- Durée & vitesse
     {
       const g = group('Durée & vitesse');
@@ -1121,7 +1248,13 @@
         const items = [[c.muted ? '🔇 Muet' : '🔊 Son actif', () => { pushHistory(); c.muted = !c.muted; }, c.muted]];
         if (c.kind === 'video') items.push(['Détacher l\'audio', () => detachAudio(c), false, 'Place le son sur une piste audio séparée']);
         items.push(['🎧 Réduire le bruit', () => { pushHistory(); c.denoise = !c.denoise; }, c.denoise, 'Réduction du bruit de fond (appliquée à l\'export)']);
+        if (c.kind === 'audio') items.push([c.role === 'voice' ? '🗣 Voix' : '🎵 Musique', () => { pushHistory(); c.role = c.role === 'voice' ? 'music' : 'voice'; }, c.role === 'voice', 'Rôle pour la baisse automatique de la musique']);
         buttons(g, items);
+        const vs = document.createElement('select');
+        [['none', 'Aucun'], ['deep', 'Grave'], ['high', 'Aiguë'], ['monster', 'Monstre'], ['robot', 'Robot'], ['echo', 'Écho'], ['cave', 'Grotte'], ['radio', 'Radio'], ['phone', 'Téléphone'], ['whisper', 'Chuchotement']].forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; vs.appendChild(o); });
+        vs.value = c.voiceFx || 'none';
+        vs.onchange = () => applyVoiceFx(c, vs.value);
+        fieldRaw(g, 'Effet de voix', vs);
       }
     }
 
@@ -1176,6 +1309,13 @@
     }
 
     const g = group('Actions');
+    if (c.kind === 'video' || c.kind === 'image') {
+      buttons(g, [['🎯 Recadrage auto (suit la personne)', async () => {
+        toast('Analyse du cadrage…', 8000);
+        const r = await autoReframe(c);
+        toast(r.ok ? `Cadrage automatique : ${r.found}/${r.samples} images avec une personne` : r.error, 4000);
+      }, false, 'Remplit le cadre et suit la personne (utile en 9:16)']]);
+    }
     if (c.kind === 'video') {
       buttons(g, [
         ['❄ Figer l\'image', () => freezeFrame(c), false, 'Insère une image fixe de 3 s au curseur'],
@@ -1197,6 +1337,250 @@
     if (c.start + nd > nextStart) nd = nextStart - c.start;
     c.speed = s;
     c.dur = Math.max(MIN_DUR, nd);
+  }
+
+  // ---------------------------------------------------------------- Fonctions v1.2
+  // Éditeur de courbes (RVB / R / V / B)
+  let curveChannel = 'rgb';
+  function curveEditor(c) {
+    c.curves = c.curves || { rgb: [[0, 0], [1, 1]], r: [[0, 0], [1, 1]], g: [[0, 0], [1, 1]], b: [[0, 0], [1, 1]] };
+    const wrap = document.createElement('div');
+    wrap.className = 'curve-wrap';
+    const tabs = document.createElement('div');
+    tabs.className = 'btn-row';
+    const colors = { rgb: '#e6e9ef', r: '#ff5a5a', g: '#4cd790', b: '#4ea1ff' };
+    [['rgb', 'RVB'], ['r', 'R'], ['g', 'V'], ['b', 'B']].forEach(([k, n]) => {
+      const b = document.createElement('button');
+      b.className = 'ghost small' + (curveChannel === k ? ' active' : '');
+      b.textContent = n;
+      b.style.color = colors[k];
+      b.onclick = () => { curveChannel = k; renderInspector(); };
+      tabs.appendChild(b);
+    });
+    const cv = document.createElement('canvas');
+    cv.width = 248; cv.height = 160;
+    cv.className = 'curve-canvas';
+    const x = cv.getContext('2d');
+    const W = cv.width, H = cv.height;
+    const pts = () => c.curves[curveChannel];
+    const toPx = (p) => [p[0] * W, (1 - p[1]) * H];
+    const drawC = () => {
+      x.clearRect(0, 0, W, H);
+      x.fillStyle = '#12151b'; x.fillRect(0, 0, W, H);
+      x.strokeStyle = '#2a2f3b'; x.lineWidth = 1;
+      for (let i = 1; i < 4; i++) { x.beginPath(); x.moveTo((i * W) / 4, 0); x.lineTo((i * W) / 4, H); x.moveTo(0, (i * H) / 4); x.lineTo(W, (i * H) / 4); x.stroke(); }
+      x.strokeStyle = '#3a4150'; x.beginPath(); x.moveTo(0, H); x.lineTo(W, 0); x.stroke();
+      ['rgb', 'r', 'g', 'b'].forEach((k) => {
+        if (k !== curveChannel && JSON.stringify(c.curves[k]) === '[[0,0],[1,1]]') return;
+        const tab = R.curveTable(c.curves[k]);
+        x.strokeStyle = colors[k]; x.globalAlpha = k === curveChannel ? 1 : 0.35; x.lineWidth = k === curveChannel ? 2 : 1;
+        x.beginPath();
+        for (let i = 0; i < 256; i++) { const px = (i / 255) * W, py = (1 - tab[i] / 255) * H; i ? x.lineTo(px, py) : x.moveTo(px, py); }
+        x.stroke();
+      });
+      x.globalAlpha = 1;
+      pts().forEach((p) => { const [px, py] = toPx(p); x.fillStyle = '#fff'; x.beginPath(); x.arc(px, py, 4.5, 0, Math.PI * 2); x.fill(); x.strokeStyle = colors[curveChannel]; x.stroke(); });
+    };
+    drawC();
+    let dragI = -1;
+    const pos = (e) => { const r = cv.getBoundingClientRect(); return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp(1 - (e.clientY - r.top) / r.height, 0, 1)]; };
+    cv.addEventListener('mousedown', (e) => {
+      const [mx, my] = pos(e);
+      const list = pts();
+      dragI = list.findIndex((p) => Math.hypot((p[0] - mx) * W, (p[1] - my) * H) < 9);
+      beginEdit();
+      if (dragI < 0) { list.push([mx, my]); list.sort((a, b) => a[0] - b[0]); dragI = list.findIndex((p) => p[0] === mx && p[1] === my); }
+      const move = (ev) => {
+        const [nx, ny] = pos(ev);
+        const l = pts();
+        const isEnd = dragI === 0 || dragI === l.length - 1;
+        const lo = dragI > 0 ? l[dragI - 1][0] + 0.01 : 0, hi = dragI < l.length - 1 ? l[dragI + 1][0] - 0.01 : 1;
+        l[dragI] = [isEnd ? l[dragI][0] : clamp(nx, lo, hi), ny];
+        drawC(); requestRender();
+      };
+      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); endEdit(); dragI = -1; };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+      drawC(); requestRender();
+    });
+    cv.addEventListener('dblclick', (e) => {
+      const [mx, my] = pos(e);
+      const l = pts();
+      const i = l.findIndex((p) => Math.hypot((p[0] - mx) * W, (p[1] - my) * H) < 9);
+      if (i > 0 && i < l.length - 1) { pushHistory(); l.splice(i, 1); drawC(); requestRender(); }
+    });
+    const presets = document.createElement('div');
+    presets.className = 'btn-row';
+    const id = [[0, 0], [1, 1]];
+    [
+      ['Contraste S', { rgb: [[0, 0], [0.25, 0.18], [0.75, 0.84], [1, 1]] }],
+      ['Délavé', { rgb: [[0, 0.12], [0.5, 0.52], [1, 0.92]] }],
+      ['Chaud', { r: [[0, 0], [0.5, 0.57], [1, 1]], b: [[0, 0], [0.5, 0.44], [1, 0.95]] }],
+      ['Froid', { r: [[0, 0], [0.5, 0.45], [1, 0.96]], b: [[0, 0.03], [0.5, 0.57], [1, 1]] }],
+      ['Ciné', { rgb: [[0, 0.04], [0.25, 0.2], [0.75, 0.8], [1, 0.96]], b: [[0, 0.08], [0.5, 0.5], [1, 0.92]], r: [[0, 0], [0.5, 0.52], [1, 1]] }],
+      ['Réinitialiser', {}],
+    ].forEach(([n, v]) => {
+      const b = document.createElement('button');
+      b.className = 'ghost small';
+      b.textContent = n;
+      b.onclick = () => { pushHistory(); c.curves = { rgb: clone(v.rgb || id), r: clone(v.r || id), g: clone(v.g || id), b: clone(v.b || id) }; renderInspector(); requestRender(); };
+      presets.appendChild(b);
+    });
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = 'Cliquez pour ajouter un point, glissez pour ajuster, double-cliquez pour le supprimer.';
+    wrap.append(tabs, cv, hint, presets);
+    return wrap;
+  }
+
+  // Recadrage automatique : suit la personne détectée et pose des images clés
+  async function autoReframe(c) {
+    const m = mediaById(c.mediaId);
+    if (!m || m.missing || (c.kind !== 'video' && c.kind !== 'image')) return { ok: false, error: 'Sélectionnez un clip vidéo ou image' };
+    if (!window.Segmenter) return { ok: false, error: 'Module IA indisponible' };
+    const { w: W, h: H } = exportDims(project.ratio, 1080);
+    const sw = m.width || 1920, sh = m.height || 1080;
+    const sc = Math.max(1, c.transform.scale || 1);
+    const fit = Math.max(W / sw, H / sh) * sc;
+    const dw = sw * fit, dh = sh * fit;
+    const maxX = Math.max(0, (dw - W) / 2), maxY = Math.max(0, (dh - H) / 2);
+    let el;
+    if (m.type === 'image') { el = new Image(); el.src = m.url; await waitImage(el); }
+    else { el = document.createElement('video'); el.muted = true; el.preload = 'auto'; el.src = m.url; await waitLoaded(el); }
+    const step = Math.max(0.33, c.dur / 40);
+    const times = [];
+    for (let t = 0; t < c.dur - 0.01; t += step) times.push(t);
+    times.push(Math.max(0, c.dur - 0.04));
+    const pts = [];
+    let found = 0;
+    const mc = document.createElement('canvas');
+    try {
+      for (const lt of (m.type === 'image' ? [0] : times)) {
+        if (m.type !== 'image') await waitSeek(el, Math.min(c.in + lt * c.speed, m.duration - 0.05));
+        const mk = await window.Segmenter.mask(el, 256, Math.max(2, Math.round((256 * sh) / sw)), mc);
+        const ct = window.Segmenter.centroid(mk);
+        if (ct) found++;
+        pts.push({ t: lt, c: ct });
+      }
+    } catch (e) {
+      return { ok: false, error: `Analyse impossible : ${e.message || e}` };
+    } finally {
+      if (el.tagName === 'VIDEO') { el.removeAttribute('src'); el.load(); }
+    }
+    if (!found) return { ok: false, error: 'Aucune personne détectée dans ce clip' };
+    // trous comblés par la dernière position connue, puis lissage
+    let last = pts.find((p) => p.c).c;
+    pts.forEach((p) => { if (p.c) last = p.c; else p.c = last; });
+    const smooth = pts.map((p, i) => {
+      const win = pts.slice(Math.max(0, i - 2), i + 3);
+      return { t: p.t, x: win.reduce((a, q) => a + q.c.x, 0) / win.length, y: win.reduce((a, q) => a + q.c.y, 0) / win.length };
+    });
+    pushHistory();
+    c.fit = 'cover';
+    c.crop = { l: 0, t: 0, r: 0, b: 0 };
+    c.keyframes = c.keyframes || {};
+    const kx = smooth.map((p) => ({ t: p.t, v: +(clamp((0.5 - p.x) * dw, -maxX, maxX) / (W / 2)).toFixed(4) }));
+    const ky = smooth.map((p) => ({ t: p.t, v: +(clamp((0.45 - p.y) * dh, -maxY, maxY) / (H / 2)).toFixed(4) }));
+    if (m.type === 'image') { delete c.keyframes.x; delete c.keyframes.y; c.transform.x = kx[0].v; c.transform.y = ky[0].v; }
+    else {
+      if (maxX > 1) c.keyframes.x = kx; else delete c.keyframes.x;
+      if (maxY > 1) c.keyframes.y = ky; else delete c.keyframes.y;
+      c.transform.x = kx[0].v; c.transform.y = ky[0].v;
+    }
+    refreshAll();
+    return { ok: true, found, samples: pts.length };
+  }
+
+  // Effets de voix (fichier traité : l'aperçu correspond à l'export)
+  async function applyVoiceFx(c, fx) {
+    const orig = c.voiceFrom ? mediaById(c.voiceFrom) : mediaById(c.mediaId);
+    if (!orig) return;
+    if (fx === 'none') { if (c.voiceFrom) { pushHistory(); c.mediaId = c.voiceFrom; delete c.voiceFrom; delete c.voiceFx; refreshAll(); } return; }
+    toast('Traitement de la voix…', 6000);
+    try {
+      const info = await api.voiceFx({ file: orig.path, fx, hasVideo: orig.type === 'video' });
+      let nm = project.media.find((x) => x.path === info.path);
+      if (!nm) {
+        nm = Object.assign({ id: uid() }, info, { name: `${orig.name} (${fx})`, hidden: true, thumb: orig.thumb });
+        project.media.push(nm);
+        prepareMedia(nm);
+      }
+      pushHistory();
+      c.voiceFrom = orig.id;
+      c.voiceFx = fx;
+      c.mediaId = nm.id;
+      refreshAll();
+      toast('Effet de voix appliqué');
+    } catch (e) { toast(`Échec : ${e.message || e}`, 5000); }
+  }
+
+  // Synthèse vocale
+  let ttsSettings = { engine: null, voice: '', rate: 0 };
+  async function speakText(text, at, opts = {}) {
+    text = String(text || '').trim();
+    if (!text) { toast('Texte vide'); return null; }
+    const engine = opts.engine || ttsSettings.engine || (await defaultTtsEngine());
+    if (!engine) { toast('Aucune voix disponible : configurez une API dans l\'onglet IA', 5000); return null; }
+    toast('Génération de la voix…', 6000);
+    try {
+      const info = await api.ttsSpeak({ engine, text, voice: opts.voice != null ? opts.voice : ttsSettings.voice, rate: opts.rate != null ? opts.rate : ttsSettings.rate });
+      const m = Object.assign({ id: uid() }, info, { name: `Voix : ${text.slice(0, 40)}` });
+      project.media.push(m);
+      await prepareMedia(m);
+      const start = at != null ? at : time;
+      pushHistory();
+      const clip = makeClip('audio', null, start, m.duration, { mediaId: m.id, role: 'voice' });
+      clip.trackId = findFreeTrack('audio', start, start + clip.dur, null);
+      project.clips.push(clip);
+      refreshAll();
+      toast('Voix ajoutée à la timeline');
+      return clip;
+    } catch (e) { toast(`Voix impossible : ${e.message || e}`, 6000); return null; }
+  }
+  let voiceList = null;
+  async function loadVoices() {
+    if (voiceList) return voiceList;
+    voiceList = await api.ttsVoices().catch(() => []);
+    return voiceList;
+  }
+  async function defaultTtsEngine() {
+    const v = await loadVoices();
+    if (v.length) return v[0].engine;
+    const st = await api.getSettings().catch(() => ({}));
+    return st.provider === 'openai' && st.apiKey ? 'api' : null;
+  }
+
+  // Musique & bruitages générés
+  async function addGeneratedMusic(style, duration) {
+    const dur = duration || Math.max(15, Math.ceil(totalDuration()) || 60);
+    toast(`Composition « ${(window.VidioMusic.STYLES[style] || {}).name} »…`, 8000);
+    const seed = Math.floor(Math.random() * 1e9);
+    const r = await window.VidioMusic.generateTrack({ style, duration: dur, seed });
+    const info = await api.writeCache({ name: `musique_${style}_${seed}.wav`, data: r.wav });
+    const m = Object.assign({ id: uid() }, info, { name: `${r.name} · ${r.bpm} BPM` });
+    project.media.push(m);
+    await prepareMedia(m);
+    pushHistory();
+    const start = 0;
+    const clip = makeClip('audio', null, start, m.duration, { mediaId: m.id, volume: 0.55, role: 'music', fadeOut: 1.5 });
+    clip.trackId = findFreeTrack('audio', start, start + clip.dur, 'a1');
+    project.clips.push(clip);
+    refreshAll();
+    toast('Musique ajoutée (libre de droits)');
+    return clip;
+  }
+  async function addSfx(type, at) {
+    const r = await window.VidioMusic.generateSfx(type);
+    const info = await api.writeCache({ name: `bruitage_${type}.wav`, data: r.wav });
+    let m = project.media.find((x) => x.path === info.path);
+    if (!m) { m = Object.assign({ id: uid() }, info, { name: `Bruitage : ${r.name}` }); project.media.push(m); await prepareMedia(m); }
+    pushHistory();
+    const start = at != null ? at : time;
+    const clip = makeClip('audio', null, start, m.duration, { mediaId: m.id, role: 'music' });
+    clip.trackId = findFreeTrack('audio', start, start + clip.dur, null);
+    project.clips.push(clip);
+    refreshAll();
+    return clip;
   }
 
   // ---------------------------------------------------------------- Fonctions v1.1
@@ -1454,6 +1838,76 @@
     $('#resSelect').onchange = (e) => { pushHistory(); project.res = +e.target.value; };
     $('#fpsSelect').onchange = (e) => { pushHistory(); project.fps = +e.target.value; };
     $('#bgColor').oninput = (e) => { project.bg = e.target.value; markDirty(); requestRender(); };
+    // Audio : musique générée, bruitages, liens
+    const mg = $('#musGrid');
+    const musDesc = { lofi: 'détente, études', upbeat: 'vlogs, pubs', chill: 'voyage, lifestyle', cinematic: 'trailers, intros', trap: 'sport, urbain', afro: 'danse, ambiance', corporate: 'présentation', suspense: 'mystère, tension' };
+    Object.entries(window.VidioMusic.STYLES).forEach(([id, st]) => {
+      const d = document.createElement('div');
+      d.className = 'preset';
+      d.innerHTML = '<b></b><span></span>';
+      d.querySelector('b').textContent = st.name;
+      d.querySelector('span').textContent = musDesc[id] || '';
+      d.onclick = async () => {
+        d.classList.add('busy');
+        $('#musStatus').textContent = `Composition « ${st.name} »…`;
+        try { await addGeneratedMusic(id, +$('#musDur').value || 0); $('#musStatus').textContent = '✔ Musique ajoutée sur la piste audio'; }
+        catch (e) { $('#musStatus').textContent = `✖ ${e.message || e}`; }
+        d.classList.remove('busy');
+      };
+      mg.appendChild(d);
+    });
+    const xg = $('#sfxGrid');
+    Object.entries(window.VidioMusic.SFX).forEach(([id, sf]) => {
+      const d = document.createElement('div');
+      d.className = 'preset';
+      d.textContent = sf.name;
+      d.onclick = async () => { d.classList.add('busy'); try { await addSfx(id); } catch (e) { toast(e.message || String(e)); } d.classList.remove('busy'); };
+      xg.appendChild(d);
+    });
+    $$('.link-list [data-url]').forEach((b) => { b.onclick = () => api.openExternal(b.dataset.url); });
+    $('#duckToggle').onchange = (e) => { pushHistory(); project.ducking = e.target.checked; };
+
+    // Voix (synthèse vocale)
+    const fillVoices = async () => {
+      const list = await loadVoices();
+      const st = await api.getSettings().catch(() => ({}));
+      const eng = $('#ttsEngine');
+      eng.innerHTML = '';
+      const engines = [];
+      if (list.some((v) => v.engine === 'windows')) engines.push(['windows', 'Voix Windows (hors-ligne)']);
+      if (list.some((v) => v.engine === 'espeak')) engines.push(['espeak', 'eSpeak (hors-ligne)']);
+      engines.push(['api', 'API (réglages de l\'onglet IA)']);
+      engines.forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; eng.appendChild(o); });
+      const fillV = () => {
+        const vs = $('#ttsVoice');
+        vs.innerHTML = '';
+        const opts = eng.value === 'api'
+          ? ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'coral', 'sage'].map((v) => [v, v])
+          : list.filter((v) => v.engine === eng.value).map((v) => [v.id, `${v.name}${v.lang ? ` (${v.lang})` : ''}`]);
+        opts.forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; vs.appendChild(o); });
+        const fr = list.find((v) => v.engine === eng.value && /^fr/i.test(v.lang || ''));
+        if (fr) vs.value = fr.id;
+        $('#ttsInfo').textContent = eng.value === 'api'
+          ? (st.provider === 'openai' && st.apiKey ? 'Utilise l\'API configurée (modèle tts-1 par défaut).' : 'Configurez d\'abord un fournisseur compatible OpenAI dans ⚙ de l\'onglet IA.')
+          : list.length ? `${list.filter((v) => v.engine === eng.value).length} voix installée(s). Ajoutez des voix françaises dans Paramètres Windows › Heure et langue › Voix.` : '';
+      };
+      eng.onchange = fillV;
+      fillV();
+    };
+    document.querySelector('#leftTabs button[data-tab="voice"]').addEventListener('click', fillVoices, { once: true });
+    $('#ttsGo').onclick = async () => {
+      ttsSettings = { engine: $('#ttsEngine').value, voice: $('#ttsVoice').value, rate: +$('#ttsRate').value };
+      $('#ttsGo').disabled = true;
+      await speakText($('#ttsText').value);
+      $('#ttsGo').disabled = false;
+    };
+    $('#ttsCaptions').onclick = async () => {
+      ttsSettings = { engine: $('#ttsEngine').value, voice: $('#ttsVoice').value, rate: +$('#ttsRate').value };
+      const texts = project.clips.filter((c) => c.kind === 'text' && !c.caption && !c.sticker).sort((a, b) => a.start - b.start);
+      if (!texts.length) { toast('Aucun texte dans le projet'); return; }
+      for (const c of texts) await speakText(c.text.content, c.start);
+    };
+
     $('#bgModeColor').onclick = () => { pushHistory(); project.bgMode = 'color'; refreshAll(); };
     $('#bgModeBlur').onclick = () => { pushHistory(); project.bgMode = 'blur'; refreshAll(); };
 
@@ -1599,6 +2053,7 @@
     $$('#effectGrid .preset').forEach((d) => d.classList.toggle('active', !!c && !!c.effect && c.effect.type === d.dataset.effect));
     $('#bgModeColor').classList.toggle('active', project.bgMode !== 'blur');
     $('#bgModeBlur').classList.toggle('active', project.bgMode === 'blur');
+    $('#duckToggle').checked = !!project.ducking;
     renderAnimGrids();
   }
 
@@ -1646,6 +2101,12 @@
         m.missing = !(await api.fileExists(m.path));
         m.url = await api.fileUrl(m.path);
       }
+      for (const c of project.clips) {
+        if (c.lut && c.lut.path && !R.hasLut(c.lut.path)) {
+          try { if (await api.fileExists(c.lut.path)) R.registerLut(c.lut.path, await api.readText(c.lut.path)); } catch (_) { /* LUT absente */ }
+        }
+      }
+      maskCache.clear();
       applyCanvasSize();
       refreshAll();
       dirty = false; updateTitle();
@@ -1741,7 +2202,7 @@
       const t = trackById(c.trackId);
       if (!m || m.missing || !t || t.muted || c.muted || c.volume <= 0) return;
       if (c.kind === 'audio' || (c.kind === 'video' && m.hasAudio && !t.hidden)) {
-        audio.push({ path: m.path, in: c.in, dur: c.dur, speed: c.speed, volume: c.volume, start: c.start, fadeIn: c.fadeIn, fadeOut: c.fadeOut, denoise: !!c.denoise });
+        audio.push({ path: m.path, in: c.in, dur: c.dur, speed: c.speed, volume: c.volume, start: c.start, fadeIn: c.fadeIn, fadeOut: c.fadeOut, denoise: !!c.denoise, role: c.kind === 'video' || c.role === 'voice' ? 'voice' : 'music' });
       }
     });
 
@@ -1782,7 +2243,10 @@
       return v;
     };
 
+    const expMasks = new Map();
     const src = {
+      procMax: Math.max(w, h),
+      mask(clip) { return expMasks.get(clip.id) || null; },
       media(clip) {
         const m = mediaById(clip.mediaId);
         if (!m) return null;
@@ -1797,7 +2261,7 @@
     let error = null;
     let encoder = 'libx264';
     try {
-      const st = await api.exportStart({ outPath, width: w, height: h, fps, duration: total, audio, quality, hw: $('#expHw').checked });
+      const st = await api.exportStart({ outPath, width: w, height: h, fps, duration: total, audio, quality, hw: $('#expHw').checked, duck: !!project.ducking });
       encoder = (st && st.encoder) || encoder;
       const frames = Math.max(1, Math.round(total * fps));
       const t0 = performance.now();
@@ -1842,6 +2306,16 @@
           })());
         });
         await Promise.all(jobs);
+        // détourage IA image par image
+        for (const c of project.clips) {
+          if (!c.removeBg || (c.kind !== 'video' && c.kind !== 'image') || t < info[c.id].from || t >= info[c.id].to) continue;
+          if (c.kind === 'image' && expMasks.has(c.id)) continue;
+          const el = src.media(c);
+          if (!el) continue;
+          const sw = el.videoWidth || el.naturalWidth || el.width, sh = el.videoHeight || el.naturalHeight || el.height;
+          let cv = expMasks.get(c.id) || document.createElement('canvas');
+          try { cv = await window.Segmenter.mask(el, 512, Math.max(2, Math.round((512 * sh) / sw)), cv); expMasks.set(c.id, cv); } catch (e) { console.warn(e); }
+        }
         R.renderFrame(ctx, project, t, src, { clean: true });
         const data = ctx.getImageData(0, 0, w, h).data;
         await api.exportFrame(data.buffer);
@@ -1989,6 +2463,7 @@
     importPaths, addMediaToTimeline, addText, splitAt, splitClip, setSpeed, detachAudio, seek, play, pause,
     pushHistory, undo, redo, refreshAll, applyCanvasSize, toast, fmtTime, markDirty,
     generateCaptions, applyTransition, addSticker, freezeFrame, reverseClip, setProp, toggleKf, openTab, runExport, openExportModal,
+    autoReframe, applyVoiceFx, speakText, addGeneratedMusic, addSfx, loadVoices,
   };
   document.dispatchEvent(new Event('vidioedit-ready'));
 })();

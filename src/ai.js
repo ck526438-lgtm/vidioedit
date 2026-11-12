@@ -93,6 +93,17 @@ Actions disponibles :
 - {"action":"freeze","clips":"selected"}  image figée de 3 s au curseur
 - {"action":"reverse","clips":...}  lecture à l'envers
 - {"action":"denoise","clips":..., "enabled":true}  réduction du bruit de fond
+- {"action":"remove_bg","clips":..., "enabled":true}  supprime l'arrière-plan (personnes) par IA
+- {"action":"chroma","clips":..., "color":"#00ff00", "tolerance":0.4}  incrustation fond vert
+- {"action":"reframe","clips":...}  recadrage automatique qui suit la personne
+- {"action":"mask","clips":..., "type":"rect|circle|linear|band|heart|star|none", "feather":0.1, "invert":false}
+- {"action":"blend","clips":..., "mode":"normal|screen|multiply|overlay|soft-light|lighten|darken|difference"}
+- {"action":"curves","clips":..., "preset":"contrast|faded|warm|cold|cine|reset"}
+- {"action":"tts","text":"...", "start":s}  voix off générée (synthèse vocale)
+- {"action":"music","style":"${Object.keys((window.VidioMusic || { STYLES: {} }).STYLES).join('|')}", "duration":s}  musique libre de droits générée
+- {"action":"sfx","type":"${Object.keys((window.VidioMusic || { SFX: {} }).SFX).join('|')}", "start":s}  bruitage
+- {"action":"voice_fx","clips":..., "effect":"none|deep|high|monster|robot|echo|cave|radio|phone|whisper"}
+- {"action":"ducking","enabled":true}  baisse la musique quand quelqu'un parle
 - {"action":"undo"}
 
 Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si la demande est impossible ou floue, renvoie "actions": [] et pose une question dans "reply". Les temps sont en secondes.`;
@@ -316,6 +327,26 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
       case 'ratio': if (P.ratios.find((r) => r.id === a.ratio)) { v.project.ratio = a.ratio; v.applyCanvasSize(); log.push(`Format ${a.ratio}.`); } return;
       case 'background': v.project.bg = a.color || '#000000'; log.push('Couleur de fond modifiée.'); return;
       case 'undo': v.undo(); log.push('Dernière action annulée.'); return;
+      case 'remove_bg': { const cs = list().filter(media); cs.forEach((c) => { c.removeBg = a.enabled !== false; }); log.push(`${a.enabled === false ? 'Arrière-plan rétabli' : 'Arrière-plan supprimé par IA'} sur ${cs.length} clip(s).`); return; }
+      case 'chroma': { const cs = list().filter(media); cs.forEach((c) => { c.chroma = Object.assign({ on: true, color: '#00ff00', tolerance: 0.4, softness: 0.3, spill: 0.5 }, c.chroma || {}, { on: a.enabled !== false }, a.color ? { color: a.color } : {}, a.tolerance != null ? { tolerance: num(a.tolerance) } : {}); }); log.push(`Fond vert retiré sur ${cs.length} clip(s).`); return; }
+      case 'reframe': {
+        for (const c of list().filter(media)) { status('Analyse du cadrage…'); const r = await v.autoReframe(c); log.push(r.ok ? `Cadrage auto : personne suivie (${r.found}/${r.samples}).` : r.error); }
+        undoMerge = true; return;
+      }
+      case 'mask': { const cs = list().filter(media); cs.forEach((c) => { c.mask = Object.assign({ type: 'rect', x: 0.5, y: 0.5, w: 0.6, h: 0.6, rotation: 0, feather: 0.1, invert: false }, c.mask || {}, { type: a.type || 'rect' }, a.feather != null ? { feather: num(a.feather) } : {}, a.invert != null ? { invert: !!a.invert } : {}); }); log.push(`Masque « ${a.type || 'rect'} » appliqué.`); return; }
+      case 'blend': list().filter((c) => c.kind !== 'audio').forEach((c) => { c.blend = a.mode || 'normal'; }); log.push(`Mode de fusion : ${a.mode}.`); return;
+      case 'curves': {
+        const id = [[0, 0], [1, 1]];
+        const presets = { contrast: { rgb: [[0, 0], [0.25, 0.18], [0.75, 0.84], [1, 1]] }, faded: { rgb: [[0, 0.12], [0.5, 0.52], [1, 0.92]] }, warm: { r: [[0, 0], [0.5, 0.57], [1, 1]], b: [[0, 0], [0.5, 0.44], [1, 0.95]] }, cold: { r: [[0, 0], [0.5, 0.45], [1, 0.96]], b: [[0, 0.03], [0.5, 0.57], [1, 1]] }, cine: { rgb: [[0, 0.04], [0.25, 0.2], [0.75, 0.8], [1, 0.96]], b: [[0, 0.08], [0.5, 0.5], [1, 0.92]] }, reset: {} };
+        const pr = presets[a.preset] || presets.contrast;
+        list().filter(media).forEach((c) => { c.curves = { rgb: v.clone(pr.rgb || id), r: v.clone(pr.r || id), g: v.clone(pr.g || id), b: v.clone(pr.b || id) }; });
+        log.push(`Courbes « ${a.preset || 'contrast'} » appliquées.`); return;
+      }
+      case 'tts': { const c = await v.speakText(a.text || '', a.start != null ? num(a.start) : null); undoMerge = true; log.push(c ? 'Voix off ajoutée.' : 'Voix off impossible.'); return; }
+      case 'music': { status('Composition de la musique…'); await v.addGeneratedMusic(a.style || 'chill', num(a.duration) || 0); undoMerge = true; log.push(`Musique « ${(window.VidioMusic.STYLES[a.style] || window.VidioMusic.STYLES.chill).name} » ajoutée (libre de droits).`); return; }
+      case 'sfx': { await v.addSfx(a.type || 'whoosh', a.start != null ? num(a.start) : null); undoMerge = true; log.push(`Bruitage « ${(window.VidioMusic.SFX[a.type] || { name: a.type }).name} » ajouté.`); return; }
+      case 'voice_fx': { for (const c of list().filter((x) => x.kind === 'video' || x.kind === 'audio')) await v.applyVoiceFx(c, a.effect || 'none'); undoMerge = true; log.push(`Effet de voix « ${a.effect} » appliqué.`); return; }
+      case 'ducking': v.project.ducking = a.enabled !== false; log.push(a.enabled === false ? 'Baisse automatique désactivée.' : 'La musique baissera automatiquement sous la voix (export).'); return;
       case 'transition': {
         const all = a.clips === 'all' || a.clips == null;
         const n = all ? v.applyTransition(a.type || 'fade', num(a.duration) || 0.5, 'all')
@@ -407,7 +438,7 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
     // Filtres
     const filterWords = [
       ['bw', /(noir (et|&) blanc|n&b|n et b|monochrome)/], ['vintage', /(vintage|retro|ancien)/], ['vivid', /(vif|vives|eclatant)/],
-      ['warm', /\bchaud/], ['cold', /\bfroid/], ['cinema', /(cinema|cinematique|film)(?!.*format)/], ['fade', /delave/],
+      ['warm', /\bchaud/], ['cold', /\bfroid/], ['cinema', /^(?!.*courbe)(?!.*format).*(cinema|cinematique|film)/], ['fade', /delave/],
       ['drama', /dramatique/], ['dream', /(reve|onirique)/], ['noir', /polar/], ['pop', /filtre pop/], ['none', /(sans filtre|enleve le filtre|retire le filtre|original)/],
     ];
     if (!/format/.test(t)) {
@@ -483,13 +514,36 @@ Règles : utilise seulement ces actions ; enchaîne-en plusieurs si besoin ; si 
     const emo = String(text).match(/\p{Extended_Pictographic}/u);
     if (emo && /(autocollant|sticker|emoji|ajoute)/.test(t)) actions.push({ action: 'sticker', emoji: emo[0] });
 
-    // Suppression
-    if (/(supprim|efface|enleve|retire)\w*\s+(le |la )?(clip|selection)/.test(t) && !/(silence|trou|filtre|son)/.test(t)) actions.push({ action: 'delete', clips: scope === 'all' && !scopeAll ? 'selected' : scope });
+    // v1.2 : détourage, cadrage, masques, voix, musique
+    if (/(arriere-plan|arriere plan|fond|decoup|detour)/.test(t) && /(supprim|enleve|retir|efface|detour|decoup)/.test(t) && !/(fond vert|bruit|flou)/.test(t)) actions.push({ action: 'remove_bg', clips: vscope, enabled: true });
+    if (/(fond vert|incrust|chroma|green screen|fond bleu)/.test(t)) actions.push({ action: 'chroma', clips: vscope, color: /bleu/.test(t) ? '#0047ff' : '#00ff00' });
+    if (/(recadr|cadrage|suivre|suis|suit).*(auto|personne|sujet|visage)|(auto).*(recadr|cadrage)/.test(t)) actions.push({ action: 'reframe', clips: vscope === 'visual' ? 'video' : vscope });
+    const mshape = [['circle', /masque (rond|cercle|circulaire|ovale)/], ['heart', /masque (en )?coeur/], ['star', /masque (en )?etoile/], ['rect', /masque (rectang|carre)/], ['linear', /masque lineaire/], ['band', /masque (bande|miroir)/], ['none', /(enleve|supprim|retire) (le )?masque/]];
+    const msk = mshape.find(([, re]) => re.test(t));
+    if (msk) actions.push({ action: 'mask', clips: vscope, type: msk[0], feather: 0.15 });
+    if (/(mode de fusion|fusion|blend)/.test(t)) actions.push({ action: 'blend', clips: vscope, mode: /ecran|screen|clair/.test(t) ? 'screen' : /produit|multipl/.test(t) ? 'multiply' : /incrust|overlay/.test(t) ? 'overlay' : /normal/.test(t) ? 'normal' : 'screen' });
+    if (/courbe/.test(t)) actions.push({ action: 'curves', clips: vscope, preset: /chaud/.test(t) ? 'warm' : /froid/.test(t) ? 'cold' : /delave|fade/.test(t) ? 'faded' : /cine/.test(t) ? 'cine' : /reinit|enleve|retire/.test(t) ? 'reset' : 'contrast' });
+    if (/(voix off|synthese vocale|\blis\b|\blire\b|voix qui dit|narration)/.test(t) && !/(effet de voix|voix (grave|aigue|de robot|robot|de monstre))/.test(t)) {
+      const sel = v.clipById(v.selectedId);
+      actions.push({ action: 'tts', text: quoted || (sel && sel.text ? sel.text.content : '') });
+    }
+    const vfx = [['deep', /voix grave/], ['high', /voix (aigue|d'ecureuil|ecureuil|chipmunk)/], ['monster', /voix (de )?monstre/], ['robot', /voix (de )?robot/], ['echo', /(voix.*echo|echo.*voix)/], ['cave', /grotte/], ['radio', /voix (de )?radio/], ['phone', /telephone/], ['whisper', /chuchot/], ['none', /(enleve|retire) l'effet de voix/]];
+    const vf = vfx.find(([, re]) => re.test(t));
+    if (vf) actions.push({ action: 'voice_fx', clips: scope === 'all' ? 'video' : scope, effect: vf[0] });
+    if (/(musique|son de fond|bande[- ]son|beat|instru)/.test(t) && /(ajoute|mets|met|genere|compose|cree)/.test(t)) {
+      const st = [['lofi', /lo-?fi|calme|detente/], ['upbeat', /(pop|entrainante|joyeuse|dynamique)/], ['cinematic', /(epique|cinemati|trailer)/], ['trap', /(trap|rap|hip-?hop|drill)/], ['afro', /(afro|amapiano|coupe-?decale|zouglou|ivoir|africain|danse)/], ['corporate', /(entreprise|corporate|presentation|\bpro\b)/], ['suspense', /(suspense|mystere|tension|peur)/], ['chill', /(douce|vlog|voyage|chill)/]].find(([, re]) => re.test(t));
+      actions.push({ action: 'music', style: st ? st[0] : 'chill', duration: secs || 0 });
+    }
+    const sfxw = [['whoosh', /whoosh|swoosh|transition sonore/], ['ding', /ding|cloche/], ['notif', /notification/], ['camera', /(photo|appareil)/], ['boom', /(boom|impact|explosion)/], ['riser', /(montee|riser)/], ['applause', /applaudi/], ['coin', /piece/], ['laser', /laser/], ['success', /succes|victoire/], ['error', /erreur/], ['heartbeat', /coeur/], ['typing', /clavier|frappe/], ['click', /clic/], ['pop', /pop/]];
+    if (/(bruitage|son de|effet sonore|sfx|bruit de)/.test(t) && !/bruit de fond/.test(t)) { const sx = sfxw.find(([, re]) => re.test(t)); if (sx) actions.push({ action: 'sfx', type: sx[0] }); }
+    if (/(baisse|diminue|attenue).*(musique).*(parle|voix)|ducking/.test(t)) actions.push({ action: 'ducking', enabled: true });
+
+    // Suppression|efface|enleve|retire)\w*\s+(le |la )?(clip|selection)/.test(t) && !/(silence|trou|filtre|son)/.test(t)) actions.push({ action: 'delete', clips: scope === 'all' && !scopeAll ? 'selected' : scope });
 
     if (!actions.length) {
       return {
         reply: 'Je n\'ai pas compris. Exemples : « supprime les silences », « coupe aux changements de plan », « filtre vintage partout », '
-          + '« accélère le clip 2 x2 », « ajoute le titre \"Mon voyage\" en haut », « format TikTok », « transitions glitch partout », « sous-titres automatiques », « effet secousse », « fond flou », « montage automatique ». '
+          + '« accélère le clip 2 x2 », « ajoute le titre \"Mon voyage\" en haut », « format TikTok », « transitions glitch partout », « sous-titres automatiques », « effet secousse », « fond flou », « supprime l\'arrière-plan », « recadrage auto », « voix off \"Bonjour\" », « ajoute une musique afro », « voix de robot », « montage automatique ». '
           + 'Pour des demandes libres, branchez un modèle IA dans ⚙ Réglages.',
         actions: [],
       };

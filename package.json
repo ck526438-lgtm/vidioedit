@@ -1,8 +1,8 @@
 {
   "name": "vidioedit",
   "productName": "VidioEdit",
-  "version": "1.1.0",
-  "description": "VidioEdit — éditeur vidéo gratuit et open source pour Windows, inspiré de CapCut, avec assistant IA de montage automatique.",
+  "version": "1.2.0",
+  "description": "VidioEdit — éditeur vidéo gratuit et open source pour Windows, inspiré de CapCut : détourage IA, sous-titres auto, musique libre de droits, assistant IA.",
   "main": "main.js",
   "author": {
     "name": "Christ (ck526438-lgtm)",
@@ -30,6 +30,7 @@
     "predist": "node -e \"require('fs').mkdirSync('vendor/whisper',{recursive:true})\""
   },
   "dependencies": {
+    "@mediapipe/selfie_segmentation": "0.1.1675465747",
     "ffmpeg-static": "^5.2.0"
   },
   "devDependencies": {

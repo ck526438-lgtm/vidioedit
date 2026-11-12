@@ -208,3 +208,14 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
 .row button.active { background: var(--grad); }
 #capBar { height: 100%; width: 0; background: var(--grad); transition: width .2s; }
 .cap-prev { font-family: "Arial Black", sans-serif; font-size: 13px; }
+
+/* v1.2 */
+.curve-wrap { display: flex; flex-direction: column; gap: 6px; }
+.curve-canvas { width: 100%; border-radius: 6px; border: 1px solid var(--line); cursor: crosshair; }
+.link-list { display: flex; flex-wrap: wrap; gap: 6px; }
+#musGrid .preset { min-height: 46px; }
+#musGrid .preset b { font-size: 12px; }
+#musGrid .preset span { font-size: 10px; color: var(--dim); }
+.preset.busy { opacity: .5; pointer-events: none; }
+.tabs button { padding: 5px 2px; font-size: 10.5px; }
+.tabs button i { font-size: 15px; }

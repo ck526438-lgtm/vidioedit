@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; img-src 'self' file: data: blob:; media-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; img-src 'self' file: data: blob:; media-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; worker-src 'self' blob:; connect-src 'self' file: data: blob:" />
   <title>VidioEdit</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -37,6 +37,8 @@
         <button data-tab="text"><i>T</i>Texte</button>
         <button data-tab="captions"><i>💬</i>Sous-titres</button>
         <button data-tab="stickers"><i>☺</i>Stickers</button>
+        <button data-tab="audio"><i>♫</i>Audio</button>
+        <button data-tab="voice"><i>🎙</i>Voix</button>
         <button data-tab="transitions"><i>⧓</i>Transitions</button>
         <button data-tab="filters"><i>◐</i>Filtres</button>
         <button data-tab="anim"><i>✦</i>Effets</button>
@@ -108,6 +110,35 @@
       <section class="tab-body hidden" data-body="stickers">
         <p class="hint">Cliquez pour ajouter au curseur :</p>
         <div id="stickerGrid" class="sticker-grid"></div>
+      </section>
+      <section class="tab-body hidden" data-body="audio">
+        <p class="hint"><b>Musique libre de droits</b> — composée par VidioEdit, unique à chaque fois, 100 % à vous.</p>
+        <div class="form-col"><label>Durée</label><select id="musDur">
+          <option value="0">Durée du projet</option><option value="15">15 s</option><option value="30">30 s</option>
+          <option value="60">1 min</option><option value="120">2 min</option><option value="180">3 min</option></select></div>
+        <div id="musGrid" class="preset-grid"></div>
+        <p class="hint" id="musStatus"></p>
+        <p class="hint"><b>Bruitages</b> — ajoutés au curseur :</p>
+        <div id="sfxGrid" class="preset-grid small"></div>
+        <label class="toggle" style="margin-top:10px"><input type="checkbox" id="duckToggle" /> Baisser la musique quand quelqu'un parle (export)</label>
+        <p class="hint"><b>Autres sources gratuites</b> (vérifiez la licence de chaque morceau) :</p>
+        <div class="link-list">
+          <button class="ghost small" data-url="https://pixabay.com/music/">Pixabay Music</button>
+          <button class="ghost small" data-url="https://freemusicarchive.org/">Free Music Archive</button>
+          <button class="ghost small" data-url="https://mixkit.co/free-stock-music/">Mixkit</button>
+          <button class="ghost small" data-url="https://freesound.org/">Freesound</button>
+          <button class="ghost small" data-url="https://studio.youtube.com/">YouTube Audio Library</button>
+        </div>
+      </section>
+      <section class="tab-body hidden" data-body="voice">
+        <p class="hint"><b>Synthèse vocale</b> — transforme un texte en voix off.</p>
+        <textarea id="ttsText" rows="5" placeholder="Écrivez le texte à lire…"></textarea>
+        <div class="form-col"><label>Moteur</label><select id="ttsEngine"></select></div>
+        <div class="form-col"><label>Voix</label><select id="ttsVoice"></select></div>
+        <div class="field two"><label>Vitesse</label><input type="range" id="ttsRate" min="-6" max="6" step="1" value="0" /></div>
+        <button class="primary wide" id="ttsGo">🎙 Générer la voix au curseur</button>
+        <button class="ghost wide" id="ttsCaptions" style="margin-top:6px">Lire tous les textes du projet</button>
+        <p class="hint" id="ttsInfo"></p>
       </section>
       <section class="tab-body hidden" data-body="transitions">
         <p class="hint">Sélectionnez un clip (ou cliquez sur ＋ entre deux clips), puis une transition.</p>
@@ -289,6 +320,9 @@
   <div id="toast"></div>
   <div id="dropOverlay" class="hidden"><div>Déposez vos médias ici</div></div>
 
+  <script src="../node_modules/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+  <script src="segment.js"></script>
+  <script src="music.js"></script>
   <script src="presets.js"></script>
   <script src="render.js"></script>
   <script src="app.js"></script>

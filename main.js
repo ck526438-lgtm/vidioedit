@@ -211,7 +211,7 @@ function atempoChain(speed) {
   return parts;
 }
 
-function buildAudioGraph(audio, firstIndex, total) {
+function buildAudioGraph(audio, firstIndex, total, duck) {
   const inputs = [];
   const filters = [];
   const labels = [];
@@ -230,7 +230,18 @@ function buildAudioGraph(audio, firstIndex, total) {
     labels.push(`[a${i}]`);
   });
   if (!labels.length) return null;
-  filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:dropout_transition=0,apad,atrim=0:${total.toFixed(3)}[aout]`);
+  const voice = labels.filter((_, i) => audio[i].role === 'voice');
+  const music = labels.filter((_, i) => audio[i].role !== 'voice');
+  const tail = `apad,atrim=0:${total.toFixed(3)}`;
+  if (duck && voice.length && music.length) {
+    // baisse automatique de la musique quand quelqu'un parle (sidechain)
+    filters.push(`${voice.join('')}amix=inputs=${voice.length}:normalize=0:dropout_transition=0,asplit=2[vk][vm]`);
+    filters.push(`${music.join('')}amix=inputs=${music.length}:normalize=0:dropout_transition=0[mus]`);
+    filters.push(`[mus][vk]sidechaincompress=threshold=0.02:ratio=12:attack=30:release=450:makeup=1[duck]`);
+    filters.push(`[duck][vm]amix=inputs=2:normalize=0:dropout_transition=0,${tail}[aout]`);
+  } else {
+    filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:dropout_transition=0,${tail}[aout]`);
+  }
   return { inputs, filter: filters.join(';') };
 }
 
@@ -245,13 +256,13 @@ ipcMain.handle('export:pick', async (_e, defName) => {
 
 ipcMain.handle('export:start', async (_e, opts) => {
   if (job) throw new Error('Un export est déjà en cours.');
-  const { outPath, width, height, fps, duration, audio, quality, hw } = opts;
+  const { outPath, width, height, fps, duration, audio, quality, hw, duck } = opts;
   const crf = { high: 18, medium: 23, low: 28 }[quality] || 20;
   const encoders = hw ? await detectHwEncoders() : [];
   const enc = encoders[0] || 'libx264';
   const args = ['-y', '-hide_banner', '-loglevel', 'error',
     '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${width}x${height}`, '-r', String(fps), '-i', 'pipe:0'];
-  const graph = buildAudioGraph(audio || [], 1, duration);
+  const graph = buildAudioGraph(audio || [], 1, duration, duck);
   if (graph) args.push(...graph.inputs, '-filter_complex', graph.filter, '-map', '0:v', '-map', '[aout]');
   args.push(...encoderArgs(enc, crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart');
   if (graph) args.push('-c:a', 'aac', '-b:a', '192k');
@@ -633,4 +644,103 @@ ipcMain.handle('captions:transcribe', async (_e, { items, lang, model, engine })
   }
   sendProgress({ phase: 'transcribe', pct: 100 });
   return results;
+});
+
+// =====================================================================
+// v1.2 — Voix (synthèse vocale, effets), fichiers générés, LUT
+// =====================================================================
+ipcMain.handle('file:readText', (_e, f) => fs.readFileSync(f, 'utf8'));
+ipcMain.handle('file:pickLut', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, { title: 'Importer une LUT', properties: ['openFile'], filters: [{ name: 'LUT 3D', extensions: ['cube'] }] });
+  return r.canceled ? null : r.filePaths[0];
+});
+// Enregistre un fichier généré (musique, bruitage) dans le cache et renvoie ses infos
+ipcMain.handle('file:writeCache', async (_e, { name, data }) => {
+  const safe = String(name).replace(/[\\/:*?"<>|]/g, '_');
+  const out = path.join(cacheDir(), safe);
+  fs.writeFileSync(out, Buffer.from(data));
+  return probe(out);
+});
+
+// ---------- Synthèse vocale
+function runPowershell(script, env) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { windowsHide: true, env: Object.assign({}, process.env, env) });
+    let out = '', err = '';
+    p.stdout.on('data', (d) => { out += d.toString('utf8'); });
+    p.stderr.on('data', (d) => { err += d.toString('utf8'); });
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(err || `PowerShell ${code}`))));
+  });
+}
+const PS_HEAD = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer;';
+
+ipcMain.handle('tts:voices', async () => {
+  const voices = [];
+  if (process.platform === 'win32') {
+    try {
+      const out = await runPowershell(`${PS_HEAD} $s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo.Name + '|' + $_.VoiceInfo.Culture.Name + '|' + $_.VoiceInfo.Gender }`);
+      out.split(/\r?\n/).filter(Boolean).forEach((l) => { const [name, lang, gender] = l.split('|'); voices.push({ engine: 'windows', id: name, name, lang, gender }); });
+    } catch (e) { /* SAPI indisponible */ }
+  } else {
+    const espeak = ['espeak-ng', 'espeak'].find((b) => { try { return require('child_process').spawnSync(b, ['--version']).status === 0; } catch (_) { return false; } });
+    if (espeak) ['fr', 'en', 'es', 'pt', 'de'].forEach((l) => voices.push({ engine: 'espeak', id: l, name: `eSpeak ${l}`, lang: l, gender: '', bin: espeak }));
+  }
+  return voices;
+});
+
+ipcMain.handle('tts:speak', async (_e, { engine, text, voice, rate = 0, volume = 100 }) => {
+  const id = crypto.createHash('md5').update(`${engine}|${voice}|${rate}|${text}`).digest('hex').slice(0, 10);
+  const out = path.join(cacheDir(), `voix_${id}.wav`);
+  if (!fs.existsSync(out)) {
+    if (engine === 'windows') {
+      await runPowershell(`${PS_HEAD} if ($env:VE_VOICE) { $s.SelectVoice($env:VE_VOICE) }; $s.Rate = [int]$env:VE_RATE; $s.Volume = [int]$env:VE_VOL; $s.SetOutputToWaveFile($env:VE_OUT); $s.Speak($env:VE_TEXT); $s.Dispose()`,
+        { VE_VOICE: voice || '', VE_RATE: String(Math.round(rate)), VE_VOL: String(Math.round(volume)), VE_OUT: out, VE_TEXT: text });
+    } else if (engine === 'espeak') {
+      const bin = ['espeak-ng', 'espeak'].find((b) => { try { return require('child_process').spawnSync(b, ['--version']).status === 0; } catch (_) { return false; } });
+      const r = require('child_process').spawnSync(bin, ['-v', voice || 'fr', '-s', String(Math.round(170 + rate * 12)), '-w', out, text]);
+      if (r.status !== 0) throw new Error(String(r.stderr || 'eSpeak a échoué'));
+    } else if (engine === 'api') {
+      const st = readSettings();
+      const base = (st.endpoint || 'https://api.openai.com/v1').replace(/\/$/, '');
+      const r = await fetch(`${base}/audio/speech`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${st.apiKey || ''}` },
+        body: JSON.stringify({ model: st.ttsModel || 'tts-1', voice: voice || 'alloy', input: text, response_format: 'wav', speed: Math.min(4, Math.max(0.25, 1 + rate / 10)) }),
+      });
+      if (!r.ok) throw new Error(`API voix : ${r.status} ${(await r.text()).slice(0, 300)}`);
+      fs.writeFileSync(out, Buffer.from(await r.arrayBuffer()));
+    } else {
+      throw new Error('Moteur de voix inconnu');
+    }
+  }
+  if (!fs.existsSync(out)) throw new Error('Aucun fichier audio produit');
+  return probe(out);
+});
+
+// ---------- Effets de voix (fichier traité, aperçu = export)
+const VOICE_FX = {
+  deep: 'aresample=48000,asetrate=38400,aresample=48000,atempo=1.25',
+  high: 'aresample=48000,asetrate=64800,aresample=48000,atempo=0.7407',
+  monster: 'aresample=48000,asetrate=31200,aresample=48000,atempo=1.5385,lowpass=f=3000',
+  robot: "aresample=48000,afftfilt=real='hypot(re,im)*sin(0)':imag='hypot(re,im)*cos(0)':win_size=512:overlap=0.75,volume=1.6",
+  echo: 'aecho=0.8:0.88:60|120:0.45|0.3',
+  cave: 'aecho=0.8:0.9:400|800|1200:0.35|0.25|0.15',
+  radio: 'highpass=f=300,lowpass=f=3400,acompressor=threshold=0.1:ratio=6,volume=1.4',
+  phone: 'highpass=f=450,lowpass=f=2800,acrusher=bits=8:mode=log:aa=1,volume=1.5',
+  whisper: "afftfilt=real='hypot(re,im)*cos((random(0)*2-1)*2*3.14)':imag='hypot(re,im)*sin((random(1)*2-1)*2*3.14)':win_size=128:overlap=0.8,volume=1.3",
+};
+ipcMain.handle('media:voicefx', async (_e, { file, fx, hasVideo }) => {
+  if (!VOICE_FX[fx]) throw new Error('Effet inconnu');
+  const id = crypto.createHash('md5').update(`${file}|${fx}`).digest('hex').slice(0, 10);
+  const out = path.join(cacheDir(), `voixfx_${fx}_${id}.${hasVideo ? 'mp4' : 'm4a'}`);
+  if (!fs.existsSync(out)) {
+    const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', file, '-af', VOICE_FX[fx]];
+    if (hasVideo) args.push('-c:v', 'copy'); else args.push('-vn');
+    args.push('-c:a', 'aac', '-b:a', '192k', out);
+    const r = await runFfmpeg(args);
+    if (r.code !== 0) throw new Error(r.stderr.slice(-400));
+  }
+  return probe(out);
 });
