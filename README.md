@@ -96,7 +96,7 @@ Architecture :
 - `src/ai.js` — assistant IA : compréhension des commandes et exécution des actions
 - `src/presets.js` — filtres, styles de texte, animations, formats
 
-Publier une nouvelle version : changez `version` dans `package.json`, puis `git tag v1.x.y && git push --tags` — GitHub Actions compile et publie les `.exe` automatiquement.
+Publier une nouvelle version : changez `version` dans `package.json` et poussez sur `main` — GitHub Actions compile et publie les `.exe` dans une release `v<version>` automatiquement.
 
 ## 🗺 Feuille de route
 
